@@ -4,7 +4,7 @@ import subprocess
 
 PROJECT = Path(__file__).resolve().parent
 GAME_ROOT = Path(r"G:\Game")
-SOURCE = PROJECT / "src/main/java/com/minecraffai/mod/MinecraftAiClient.java"
+SOURCES = sorted((PROJECT / "src/main/java").rglob("*.java"))
 OUTPUT = PROJECT / "build-manual/classes"
 ARGS = PROJECT / "build-manual/javac.args"
 JAVAC = Path(r"C:\Users\Admin\AppData\Roaming\.minecraft\runtime\java-runtime-epsilon\bin\javac.exe")
@@ -37,7 +37,7 @@ ARGS.write_text(
     + "\n-d\n"
     + quote(str(OUTPUT))
     + "\n"
-    + quote(str(SOURCE))
+    + "\n".join(quote(str(source)) for source in SOURCES)
     + "\n",
     encoding="utf-8",
 )

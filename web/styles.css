@@ -43,6 +43,7 @@ button { border: 0; cursor: pointer; color: inherit; }
 .form-grid input:focus, .form-grid select:focus, .form-grid textarea:focus { border-color: rgba(138,240,188,.55); }
 .settings-actions { display: flex; align-items: center; gap: 12px; margin-top: 17px; }
 .settings-actions #automationSaveStatus { color: #7f9294; font: 10px "DM Mono", monospace; }
+.danger-mode { border-color: rgba(243,179,121,.7); color: var(--orange); background: rgba(243,179,121,.1); }
 .automation-monitor { border-top: 1px solid var(--border); padding: 13px 21px 16px; color: #7f9294; font: 10px "DM Mono", monospace; }
 @media (max-width: 720px) { .form-grid { grid-template-columns: 1fr; }.form-grid label.wide { grid-column: auto; } }
 

@@ -1,5 +1,6 @@
 data/auto-reply.json
 data/knowledge-base.json
+data/experiences.json
 minecraft-ai-mod/build/
 minecraft-ai-mod/build-manual/
 minecraft-ai-mod/.gradle/

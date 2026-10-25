@@ -27,6 +27,7 @@
         <button class="nav-item" data-section="logs"><span class="nav-icon">▤</span>运行日志</button>
         <button class="nav-item" data-section="settings"><span class="nav-icon">⚙</span>设置</button>
         <button class="nav-item" data-section="knowledge"><span class="nav-icon">▤</span>知识库</button>
+        <button class="nav-item" data-section="experiences"><span class="nav-icon">✦</span>经验学习</button>
       </nav>
 
       <div class="sidebar-bottom">
@@ -83,15 +84,24 @@
           <div class="panel-header"><div><p class="panel-kicker">AUTOMATION</p><h3>AI 自动回复</h3></div><span class="automation-state" id="automationState">未启用</span></div>
           <form class="settings-form" id="automationForm">
             <label class="switch-row"><span><b>启用自动回复</b><small>实时监听游戏聊天中的触发词</small></span><input id="automationEnabled" type="checkbox" /></label>
+            <label class="switch-row"><span><b>同步语音回答</b><small>文字发送后，通过 Plasmo Voice 在游戏内播放 AI 语音</small></span><input id="voiceReplyEnabled" type="checkbox" /></label>
             <div class="form-grid">
               <label><span>触发名称（不含 @）</span><input id="triggerName" maxlength="80" placeholder="MinecraftAI" required /></label>
               <label><span>目标 Minecraft 窗口</span><select id="automationWindowId"><option value="">单窗口时自动选择</option></select></label>
               <label><span>Base URL</span><input id="aiBaseUrl" maxlength="500" placeholder="https://api.openai.com/v1" required /></label>
               <label><span>模型</span><input id="aiModel" maxlength="200" placeholder="gpt-4o-mini" required /></label>
+              <label><span>语音 Base URL <small>留空使用 AI Base URL</small></span><input id="voiceBaseUrl" maxlength="500" placeholder="留空则使用上面的 Base URL" /></label>
+              <label><span>语音模型</span><input id="voiceModel" maxlength="200" placeholder="gpt-4o-mini-tts" required /></label>
+              <label><span>语音音色</span><input id="voiceName" maxlength="80" placeholder="alloy" required /></label>
               <label class="wide"><span>API Key <small id="apiKeyHint"></small></span><input id="aiApiKey" type="password" maxlength="1000" autocomplete="off" placeholder="留空则保留已保存的 Key" /></label>
               <label><span>Temperature</span><input id="aiTemperature" type="number" min="0" max="2" step="0.1" /></label>
               <label><span>最大回复 Token</span><input id="aiMaxTokens" type="number" min="16" max="2048" step="1" /></label>
+              <label><span>语音接口</span><select id="voiceProvider"><option value="openai">OpenAI 兼容</option><option value="voicerss">VoiceRSS 免费（350 次/天）</option></select></label>
+              <label><span>播放方式</span><select id="voiceOutput"><option value="local">本机播放（推荐）</option><option value="microphone">模拟麦克风发送给玩家</option></select></label>
+              <label><span>VoiceRSS API Key <small id="voiceApiKeyHint"></small></span><input id="voiceApiKey" type="password" maxlength="1000" autocomplete="off" placeholder="选择 VoiceRSS 时填写" /></label>
               <label class="wide"><span>系统提示词</span><textarea id="aiSystemPrompt" maxlength="8000" rows="5" required></textarea></label>
+              <label><span>语音语言</span><input id="voiceLanguage" maxlength="20" value="zh-cn" placeholder="zh-cn" required /></label>
+              <label><span>语音速度</span><input id="voiceRate" type="number" min="-10" max="10" step="1" value="0" /></label>
             </div>
             <div class="settings-actions"><button class="primary-button" type="submit">保存自动回复设置</button><span id="automationSaveStatus"></span></div>
           </form>
@@ -113,6 +123,19 @@
           <div class="knowledge-list" id="knowledgeList"><div class="loading-state">正在读取知识库</div></div>
         </section>
 
+        <section class="panel knowledge-panel" id="experiencePanel" hidden>
+          <div class="panel-header"><div><p class="panel-kicker">EXPERIENCE LOOP</p><h3>经验学习</h3><small id="experienceCount">0 条经验</small></div></div>
+          <form class="knowledge-form" id="experienceForm">
+            <div class="form-grid">
+              <label><span>用户问题</span><input id="experienceUserMessage" maxlength="1000" required placeholder="例如：挖矿前先检查什么？" /></label>
+              <label><span>经验规则</span><input id="experienceLesson" maxlength="2400" required placeholder="例如：先读取背包并按优先级切换镐子" /></label>
+              <label class="wide"><span>参考回答</span><textarea id="experienceReply" maxlength="2000" rows="3" required placeholder="填写审核后允许参考的回答"></textarea></label>
+            </div>
+            <div class="settings-actions"><button class="primary-button" type="submit">提交待审核经验</button><span id="experienceSaveStatus"></span></div>
+          </form>
+          <div class="knowledge-list" id="experienceList"><div class="loading-state">正在读取经验库</div></div>
+        </section>
+
         <section class="roadmap"><div><p class="panel-kicker">BUILDING THE FUTURE</p><h3>你的机器人，下一步想做什么？</h3><p>页面结构已经为更多能力留好位置。</p></div><div class="roadmap-tags"><span>自动化任务</span><span>定时提醒</span><span>世界监控</span><span>插件中心</span></div></section>
         <section class="panel settings-panel" id="miningPanel" hidden>
           <div class="panel-header"><div><p class="panel-kicker">MINING TASK</p><h3>第一阶段有限挖矿</h3></div><span class="automation-state" id="miningState">空闲</span></div>
@@ -128,6 +151,14 @@
             <div class="settings-actions"><button class="primary-button" type="submit" id="miningStartButton">开始挖矿</button><button class="outline-button" type="button" id="miningStopButton">停止</button><span id="miningSaveStatus"></span></div>
           </form>
           <pre class="automation-monitor" id="miningMonitor">等待任务</pre>
+        </section>
+        <section class="panel settings-panel" id="followPanel" hidden>
+          <div class="panel-header"><div><p class="panel-kicker">FOLLOW TASK</p><h3>跟随行走模式</h3></div><span class="automation-state" id="followState">空闲</span></div>
+          <div class="settings-form">
+            <div class="switch-row"><span><strong>无视周围安全行走</strong><small>允许通过危险方块并接受更大的下落风险；仍会遵守实体碰撞和游戏本身的物理限制。</small></span><button class="outline-button" type="button" id="followSafetyButton">启用</button></div>
+            <div class="settings-actions"><button class="outline-button" type="button" id="followRefreshButton">刷新跟随状态</button><button class="outline-button" type="button" id="followStopButton">停止跟随</button><span id="followSaveStatus"></span></div>
+          </div>
+          <pre class="automation-monitor" id="followMonitor">等待任务</pre>
         </section>
 
       </div>

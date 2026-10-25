@@ -4,9 +4,11 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { TextDecoder } from "node:util";
-import { discoverWindows, getEnvironment, getInventory, getMiningStatus, getObservation, publicWindow, sendChat, startMining, stopMining, validateMessage, validateMiningPlan } from "./minecraft-mod-api.mjs";
+import { discoverWindows, getEnvironment, getInventory, getMiningStatus, getObservation, getNearbyPlayers, getFollowStatus, setFollowSafety, publicWindow, sendChat, startMining, stopMining, validateMessage, validateMiningPlan, validateFollowPlan } from "./minecraft-mod-api.mjs";
+import { executeFollowCommand, followCommandFromChat } from "./follow-skill.mjs";
 import { AutoReplyService } from "./auto-reply.mjs";
 import { KnowledgeBase, MAX_ENTRIES } from "./knowledge-base.mjs";
+import { ExperienceStore, MAX_EXPERIENCES } from "./experience-store.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(ROOT, "web");
@@ -15,6 +17,7 @@ const HOST = process.env.MC_DASHBOARD_HOST ?? "127.0.0.1";
 const DEFAULT_LOG_PATH = String.raw`G:\Game\[PCL启动器打包]RO26.2性能优化+生电轻量版 1.0.1\.minecraft\versions\[PCL启动器打包]RO26.2性能优化+生电轻量版\logs\latest.log`;
 const decoder = new TextDecoder("gb18030");
 const knowledgeBase = new KnowledgeBase();
+const experienceStore = new ExperienceStore();
 
 function miningPlanFromChat(text) {
   const source = String(text ?? "").replace(/@[^\s]+/u, " ");
@@ -51,11 +54,17 @@ async function startMiningAndVerify(window, plan) {
 const autoReply = new AutoReplyService({
   getLogPath: () => process.env.MC_LOG_PATH ?? DEFAULT_LOG_PATH,
   knowledgeBase,
+  experienceStore,
   skillExecutor: async (skill, window, chatText) => {
     if (skill === "minecraft_observe") return getObservation(window);
     if (skill === "minecraft_inventory") return getInventory(window);
     if (skill === "minecraft_environment") return getEnvironment(window);
     if (skill === "minecraft_mining") return startMiningAndVerify(window, miningPlanFromChat(chatText));
+    if (skill === "minecraft_follow") {
+      const command = followCommandFromChat(chatText);
+      if (!command) throw new Error("未识别到明确的跟随指令");
+      return executeFollowCommand(window, command);
+    }
     throw new Error(`未知技能：${skill}`);
   },
 });
@@ -158,6 +167,18 @@ async function api(req, res, url) {
         method: "POST/GET",
         endpoint: "/api/skills/minecraft_mining",
         readOnly: false,
+      }, {
+        name: "minecraft_players",
+        description: "识别 32 格内可跟随的其他玩家，按距离排序",
+        method: "GET",
+        endpoint: "/api/skills/minecraft_players",
+        readOnly: true,
+      }, {
+        name: "minecraft_follow",
+        description: "先识别附近玩家，再选择一位并锁定 UUID 持续跟随；支持查询和停止",
+        method: "POST/GET",
+        endpoint: "/api/skills/minecraft_follow",
+        readOnly: false,
       }],
     });
   }
@@ -187,6 +208,7 @@ async function api(req, res, url) {
       transport: "fabric-mod",
       automation: await autoReply.getPublicState(),
       knowledgeBase: { ...knowledgeBase.stats(), maxEntries: MAX_ENTRIES },
+      experiences: { ...experienceStore.stats(), maxEntries: MAX_EXPERIENCES },
       ...(windowError ? { windowError } : {}),
       now: new Date().toISOString(),
     });
@@ -227,6 +249,57 @@ async function api(req, res, url) {
     }
   }
 
+  if (url.pathname === "/api/experiences" || url.pathname === "/api/experiences/feedback") {
+    if (url.pathname === "/api/experiences" && req.method === "GET") {
+      try {
+        const status = url.searchParams.get("status") || undefined;
+        const limit = validateLimit(url.searchParams.get("limit"));
+        return json(res, 200, { ok: true, entries: experienceStore.list({ status, limit }), ...experienceStore.stats(), maxEntries: MAX_EXPERIENCES });
+      } catch (error) { return json(res, 400, { ok: false, error: error.message }); }
+    }
+    if (url.pathname === "/api/experiences" && (req.method === "POST" || req.method === "PUT")) {
+      try {
+        const body = await readBody(req);
+        const entry = await experienceStore.upsert({ ...body, source: body?.source || "manual", status: "pending" });
+        return json(res, 200, { ok: true, entry, entries: experienceStore.list(), ...experienceStore.stats(), maxEntries: MAX_EXPERIENCES });
+      } catch (error) { return json(res, 400, { ok: false, error: error.message }); }
+    }
+    if (url.pathname === "/api/experiences" && req.method === "DELETE") {
+      try {
+        const entry = await experienceStore.remove(url.searchParams.get("id"));
+        return json(res, 200, { ok: true, entry, entries: experienceStore.list(), ...experienceStore.stats(), maxEntries: MAX_EXPERIENCES });
+      } catch (error) { return json(res, 400, { ok: false, error: error.message }); }
+    }
+    if (url.pathname === "/api/experiences/feedback" && req.method === "POST") {
+      try {
+        const entry = await experienceStore.applyFeedback(await readBody(req));
+        return json(res, 200, { ok: true, entry, ...experienceStore.stats() });
+      } catch (error) { return json(res, 400, { ok: false, error: error.message }); }
+    }
+  }
+
+  const experienceIdPath = url.pathname.match(/^\/api\/experiences\/([^/]+)$/u);
+  if (experienceIdPath && (req.method === "PUT" || req.method === "DELETE")) {
+    try {
+      const id = decodeURIComponent(experienceIdPath[1]);
+      if (req.method === "DELETE") {
+        const entry = await experienceStore.remove(id);
+        return json(res, 200, { ok: true, entry, entries: experienceStore.list(), ...experienceStore.stats(), maxEntries: MAX_EXPERIENCES });
+      }
+      const body = await readBody(req);
+      const entry = await experienceStore.upsert({ ...body, id, source: body?.source || "manual", status: "pending" });
+      return json(res, 200, { ok: true, entry, entries: experienceStore.list(), ...experienceStore.stats(), maxEntries: MAX_EXPERIENCES });
+    } catch (error) { return json(res, 400, { ok: false, error: error.message }); }
+  }
+
+  const experienceAction = url.pathname.match(/^\/api\/experiences\/([^/]+)\/(approve|reject)$/u);
+  if (experienceAction && req.method === "POST") {
+    try {
+      const entry = await experienceStore.setStatus(decodeURIComponent(experienceAction[1]), experienceAction[2] === "approve" ? "approved" : "disabled");
+      return json(res, 200, { ok: true, entry, ...experienceStore.stats() });
+    } catch (error) { return json(res, 400, { ok: false, error: error.message }); }
+  }
+
   if (req.method === "GET" && url.pathname === "/api/skills/minecraft_inventory") {
     try {
       const requestedWindowId = validateWindowId(url.searchParams.get("windowId"));
@@ -265,6 +338,30 @@ async function api(req, res, url) {
     } catch (error) {
       return json(res, 400, { ok: false, error: error.message });
     }
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/skills/minecraft_players") {
+    try {
+      const selected = await selectMinecraftWindow(url.searchParams.get("windowId"));
+      return json(res, 200, { ok: true, skill: "minecraft_players", windowId: selected.id, result: await getNearbyPlayers(selected) });
+    } catch (error) { return json(res, 400, { ok: false, error: error.message }); }
+  }
+
+  if (url.pathname === "/api/skills/minecraft_follow" || url.pathname === "/api/skills/minecraft_follow/stop" || url.pathname === "/api/skills/minecraft_follow/safety") {
+    try {
+      const stopping = url.pathname.endsWith("/stop");
+      const safety = url.pathname.endsWith("/safety");
+      if ((stopping || safety) && req.method !== "POST") return json(res, 405, { ok: false, error: "跟随技能查询使用 GET，开始、停止和安全模式切换使用 POST" });
+      if (!safety && !["GET", "POST"].includes(req.method)) return json(res, 405, { ok: false, error: "跟随技能查询使用 GET，开始和停止使用 POST" });
+      const body = req.method === "POST" ? await readBody(req) : {};
+      if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("跟随参数格式无效");
+      const plan = req.method === "POST" && !stopping && !safety ? validateFollowPlan(body) : null;
+      const selected = await selectMinecraftWindow(body.windowId ?? url.searchParams.get("windowId"));
+      const result = safety ? await setFollowSafety(selected, body.ignoreSafety)
+        : stopping ? await executeFollowCommand(selected, { action: "stop" })
+          : req.method === "GET" ? await getFollowStatus(selected) : await executeFollowCommand(selected, { ...plan, action: "start" });
+      return json(res, 200, { ok: true, skill: "minecraft_follow", action: safety ? "safety" : stopping ? "stop" : req.method === "GET" ? "status" : "start", windowId: selected.id, result });
+    } catch (error) { return json(res, 400, { ok: false, error: error.message }); }
   }
 
   if (url.pathname === "/api/skills/minecraft_mining" || url.pathname === "/api/skills/minecraft_mining/stop") {
@@ -361,9 +458,9 @@ const server = createServer(async (req, res) => {
   }
 });
 
-knowledgeBase.load().catch((error) => {
+Promise.all([knowledgeBase.load(), experienceStore.load()]).catch((error) => {
   autoReply.status.lastError = error.message;
-  console.error(`Minecraft AI knowledge base startup failed: ${error.message}`);
+  console.error(`Minecraft AI persistent store startup failed: ${error.message}`);
 }).then(() => autoReply.start()).catch((error) => {
   autoReply.status.lastError = error.message;
   console.error(`Minecraft AI auto-reply startup failed: ${error.message}`);

@@ -1,4 +1,4 @@
-const state = { messages: [], windows: [], selectedWindowId: null, demo: false, automationInitialized: false, automation: null, knowledgeEntries: [], mining: null };
+const state = { messages: [], windows: [], selectedWindowId: null, demo: false, automationInitialized: false, automation: null, knowledgeEntries: [], experiences: [], mining: null, follow: null };
 const $ = (selector) => document.querySelector(selector);
 let dataLoading = false;
 
@@ -80,9 +80,17 @@ function renderAutomation(value) {
   const config = value.config;
   if (!state.automationInitialized) {
     $("#automationEnabled").checked = Boolean(config.enabled);
+    $("#voiceReplyEnabled").checked = Boolean(config.voiceReplyEnabled);
     $("#triggerName").value = config.triggerName ?? "";
     $("#aiBaseUrl").value = config.baseUrl ?? "";
     $("#aiModel").value = config.model ?? "";
+    $("#voiceProvider").value = config.voiceProvider ?? "openai";
+    $("#voiceOutput").value = config.voiceOutput ?? "local";
+    $("#voiceBaseUrl").value = config.voiceBaseUrl ?? "";
+    $("#voiceModel").value = config.voiceModel ?? "";
+    $("#voiceName").value = config.voice ?? "";
+    $("#voiceLanguage").value = config.voiceLanguage ?? "zh-cn";
+    $("#voiceRate").value = config.voiceRate ?? 0;
     $("#aiTemperature").value = config.temperature ?? 0.7;
     $("#aiMaxTokens").value = config.maxTokens ?? 256;
     $("#aiSystemPrompt").value = config.systemPrompt ?? "";
@@ -90,26 +98,55 @@ function renderAutomation(value) {
   }
   $("#automationState").textContent = config.enabled ? "已启用" : "未启用";
   $("#apiKeyHint").textContent = config.apiKeySet ? "（已保存，留空保持不变）" : "（未设置）";
+  $("#voiceApiKeyHint").textContent = config.voiceApiKeySet ? "（已保存，留空保持不变）" : "（未设置）";
+  updateVoiceProviderFields();
   const status = value.status ?? {};
   $("#automationMonitor").textContent = status.lastError
     ? `错误：${status.lastError}`
-    : `已处理 ${status.processed ?? 0} 条聊天，已回复 ${status.replied ?? 0} 条${status.lastSkills?.length ? `，最近技能 ${status.lastSkills.join("、")}` : ""}${status.lastReplyAt ? `，最近回复 ${status.lastReplyAt}` : ""}`;
+    : `已处理 ${status.processed ?? 0} 条聊天，已回复 ${status.replied ?? 0} 条${status.lastSkills?.length ? `，最近技能 ${status.lastSkills.join("、")}` : ""}${status.lastReplyAt ? `，最近回复 ${status.lastReplyAt}` : ""}${config.voiceReplyEnabled ? `，语音播放 ${status.voicePlayed ?? 0} 条` : ""}${status.lastVoiceError ? `，语音错误：${status.lastVoiceError}` : ""}`;
+}
+
+function updateVoiceProviderFields() {
+  const provider = $("#voiceProvider")?.value;
+  const voice = $("#voiceName");
+  const base = $("#voiceBaseUrl");
+  const model = $("#voiceModel");
+  if (!provider || !voice) return;
+  if (provider === "voicerss") {
+    if (!voice.value || voice.value === "alloy") voice.value = "Luli";
+    if (base) base.disabled = true;
+    if (model) model.disabled = true;
+  } else {
+    if (voice.value === "Luli" || voice.value === "Shu" || voice.value === "Chow") voice.value = "alloy";
+    if (base) base.disabled = false;
+    if (model) model.disabled = false;
+  }
 }
 
 async function saveAutomation(event) {
   event.preventDefault();
   const payload = {
     enabled: $("#automationEnabled").checked,
+    voiceReplyEnabled: $("#voiceReplyEnabled").checked,
     triggerName: $("#triggerName").value,
     windowId: $("#automationWindowId").value,
     baseUrl: $("#aiBaseUrl").value,
     model: $("#aiModel").value,
+    voiceProvider: $("#voiceProvider").value,
+    voiceOutput: $("#voiceOutput").value,
+    voiceBaseUrl: $("#voiceBaseUrl").value,
+    voiceLanguage: $("#voiceLanguage").value,
+    voiceRate: Number($("#voiceRate").value),
+    voiceModel: $("#voiceModel").value,
+    voice: $("#voiceName").value,
     temperature: Number($("#aiTemperature").value),
     maxTokens: Number($("#aiMaxTokens").value),
     systemPrompt: $("#aiSystemPrompt").value,
   };
   const apiKey = $("#aiApiKey").value;
   if (apiKey) payload.apiKey = apiKey;
+  const voiceApiKey = $("#voiceApiKey").value;
+  if (voiceApiKey) payload.voiceApiKey = voiceApiKey;
   const status = $("#automationSaveStatus");
   status.textContent = "保存中...";
   try {
@@ -117,6 +154,7 @@ async function saveAutomation(event) {
     const result = await response.json();
     if (!response.ok || !result.ok) throw new Error(result.error || "保存失败");
     $("#aiApiKey").value = "";
+    $("#voiceApiKey").value = "";
     renderAutomation(result);
     status.textContent = "已保存";
     showToast("自动回复设置已保存");
@@ -213,10 +251,74 @@ async function deleteKnowledge(id) {
   }
 }
 
+function renderExperiences(data) {
+  state.experiences = Array.isArray(data?.entries) ? data.entries : [];
+  const pending = data?.pending ?? state.experiences.filter((entry) => entry.status === "pending").length;
+  const approved = data?.approved ?? state.experiences.filter((entry) => entry.status === "approved").length;
+  $("#experienceCount").textContent = `${approved} 条已启用 / ${pending} 条待审核 / ${data?.total ?? state.experiences.length} 条经验`;
+  const list = $("#experienceList");
+  if (!state.experiences.length) {
+    list.innerHTML = '<div class="loading-state">还没有经验。自动回复成功后会自动生成待审核经验。</div>';
+    return;
+  }
+  const labels = { pending: "待审核", approved: "已启用", disabled: "已停用" };
+  list.innerHTML = state.experiences.map((entry) => `<article class="knowledge-entry ${entry.status === "disabled" ? "disabled" : ""}">
+    <div class="knowledge-entry-main"><div class="knowledge-entry-title">${escapeHtml(entry.userMessage)}<span>${labels[entry.status] || entry.status}</span></div><div class="knowledge-entry-keywords">${escapeHtml(entry.source)} · 置信度 ${Math.round((entry.confidence || 0) * 100)}% · 使用 ${entry.uses || 0} 次</div><p><b>规则：</b>${escapeHtml(entry.lesson || "待补充") }<br /><b>回答：</b>${escapeHtml(entry.assistantReply)}</p></div>
+    <div class="knowledge-entry-actions">${entry.status === "pending" ? `<button type="button" data-experience-approve="${escapeHtml(entry.id)}">启用</button>` : ""}${entry.status === "approved" ? `<button type="button" data-experience-reject="${escapeHtml(entry.id)}">停用</button>` : ""}<button type="button" data-experience-delete="${escapeHtml(entry.id)}">删除</button></div>
+  </article>`).join("");
+  list.querySelectorAll("[data-experience-approve]").forEach((button) => button.addEventListener("click", () => updateExperienceStatus(button.dataset.experienceApprove, "approve")));
+  list.querySelectorAll("[data-experience-reject]").forEach((button) => button.addEventListener("click", () => updateExperienceStatus(button.dataset.experienceReject, "reject")));
+  list.querySelectorAll("[data-experience-delete]").forEach((button) => button.addEventListener("click", () => deleteExperience(button.dataset.experienceDelete)));
+}
+
+async function loadExperiences() {
+  try {
+    const response = await fetch("/api/experiences?limit=200", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || "经验库读取失败");
+    renderExperiences(data);
+  } catch (error) { $("#experienceList").innerHTML = `<div class="loading-state">${escapeHtml(error.message)}</div>`; }
+}
+
+async function saveExperience(event) {
+  event.preventDefault();
+  const status = $("#experienceSaveStatus");
+  status.textContent = "保存中...";
+  try {
+    const response = await fetch("/api/experiences", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userMessage: $("#experienceUserMessage").value, lesson: $("#experienceLesson").value, assistantReply: $("#experienceReply").value }) });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || "经验保存失败");
+    renderExperiences(data);
+    event.target.reset();
+    status.textContent = "已提交待审核";
+    showToast("经验已提交，审核通过后才会影响回答");
+  } catch (error) { status.textContent = error.message; showToast(error.message); }
+}
+
+async function updateExperienceStatus(id, action) {
+  try {
+    const response = await fetch(`/api/experiences/${encodeURIComponent(id)}/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || "经验状态更新失败");
+    await loadExperiences();
+    showToast(action === "approve" ? "经验已启用" : "经验已停用");
+  } catch (error) { showToast(error.message); }
+}
+
+async function deleteExperience(id) {
+  if (!window.confirm("确定删除这条经验吗？")) return;
+  try {
+    const response = await fetch(`/api/experiences?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || "经验删除失败");
+    renderExperiences(data); showToast("经验已删除");
+  } catch (error) { showToast(error.message); }
+}
+
 function renderMiningStatus(data) {
   state.mining = data?.result?.mining ?? null;
   const status = data?.result?.status ?? "idle";
-  const stateLabel = ({ idle: "空闲", running: "运行中", breaking: "挖掘中", waiting_target: "等待目标", completed: "已完成", timeout: "已超时", stopped: "已停止", safety_stop: "安全停止", inventory_full: "背包已满", limit_reached: "达到上限", error: "错误" })[status] ?? status;
+  const stateLabel = ({ idle: "空闲", running: "运行中", equipping: "切换镐子中", moving: "靠近目标", breaking: "挖掘中", waiting_target: "等待目标", completed: "已完成", timeout: "已超时", stopped: "已停止", safety_stop: "安全停止", inventory_full: "背包已满", limit_reached: "达到上限", error: "错误" })[status] ?? status;
   const stateNode = $("#miningState");
   const monitor = $("#miningMonitor");
   if (stateNode) stateNode.textContent = stateLabel;
@@ -266,6 +368,54 @@ async function stopMining() {
   } catch (error) { showToast(error.message); }
 }
 
+function renderFollowStatus(data) {
+  state.follow = data?.result?.follow ?? null;
+  const status = data?.result?.status ?? "idle";
+  const labels = { idle: "空闲", following: "跟随中", holding: "保持距离", pathfinding: "寻找路线", paused: "已暂停", stopped: "已停止", target_lost: "目标丢失", stuck: "已卡住", safety_stop: "安全停止", timeout: "已超时", error: "错误" };
+  const stateNode = $("#followState");
+  const monitor = $("#followMonitor");
+  const button = $("#followSafetyButton");
+  if (stateNode) stateNode.textContent = labels[status] ?? status;
+  if (monitor) monitor.textContent = data?.result?.follow ? JSON.stringify(data.result.follow, null, 2) : `状态：${labels[status] ?? status}`;
+  if (button) {
+    const unsafe = Boolean(data?.result?.follow?.ignoreSafety ?? data?.result?.ignoreSafety);
+    button.textContent = unsafe ? "恢复安全模式" : "启用";
+    button.dataset.ignoreSafety = unsafe ? "false" : "true";
+    button.classList.toggle("danger-mode", unsafe);
+  }
+}
+
+async function loadFollowStatus() {
+  if (!state.selectedWindowId || !$("#followPanel")) return;
+  try {
+    const response = await fetch(`/api/skills/minecraft_follow?windowId=${encodeURIComponent(state.selectedWindowId)}`, { cache: "no-store" });
+    const data = await response.json();
+    if (response.ok && data.ok) renderFollowStatus(data);
+  } catch { /* backend remains authoritative */ }
+}
+
+async function toggleFollowSafety() {
+  if (!state.selectedWindowId) return showToast("请先选择 Minecraft 窗口");
+  const ignoreSafety = $("#followSafetyButton").dataset.ignoreSafety === "true";
+  try {
+    const response = await fetch("/api/skills/minecraft_follow/safety", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ windowId: state.selectedWindowId, ignoreSafety }) });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || "安全行走模式切换失败");
+    renderFollowStatus(data);
+    showToast(ignoreSafety ? "已启用无视周围安全行走" : "已恢复安全行走模式");
+  } catch (error) { showToast(error.message); }
+}
+
+async function stopFollow() {
+  if (!state.selectedWindowId) return showToast("请先选择 Minecraft 窗口");
+  try {
+    const response = await fetch("/api/skills/minecraft_follow/stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ windowId: state.selectedWindowId }) });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || "跟随任务停止失败");
+    renderFollowStatus(data); showToast("跟随任务已停止");
+  } catch (error) { showToast(error.message); }
+}
+
 function setConnection(connected, text) {
   $("#connectionText").textContent = text;
   $("#runtimeStatus").textContent = state.windows.length > 1 && !state.selectedWindowId ? "待选择" : connected ? "运行中" : "待连接";
@@ -282,6 +432,7 @@ async function loadData({ silent = false } = {}) {
     renderWindowSelector(status.windows);
     renderAutomation(status.automation);
     await loadMiningStatus();
+    await loadFollowStatus();
     const bridgeReady = status.ok && (status.directApiAvailable ?? status.bridgeAvailable);
     const connectionText = status.windowError
       ? "Mod API 不可用"
@@ -356,9 +507,14 @@ document.addEventListener("DOMContentLoaded", () => {
   window.setInterval(() => loadData({ silent: true }), 3000);
   $("#messageForm").addEventListener("submit", sendMessage);
   $("#automationForm").addEventListener("submit", saveAutomation);
+  $("#voiceProvider")?.addEventListener("change", updateVoiceProviderFields);
   $("#miningForm")?.addEventListener("submit", startMining);
   $("#miningStopButton")?.addEventListener("click", stopMining);
+  $("#followSafetyButton")?.addEventListener("click", toggleFollowSafety);
+  $("#followRefreshButton")?.addEventListener("click", loadFollowStatus);
+  $("#followStopButton")?.addEventListener("click", stopFollow);
   $("#knowledgeForm").addEventListener("submit", saveKnowledge);
+  $("#experienceForm").addEventListener("submit", saveExperience);
   $("#newKnowledgeButton").addEventListener("click", () => { resetKnowledgeForm(); $("#knowledgeForm").hidden = false; $("#knowledgeTitle").focus(); });
   $("#cancelKnowledgeButton").addEventListener("click", resetKnowledgeForm);
   renderAutomationWindows();
@@ -379,19 +535,27 @@ document.addEventListener("DOMContentLoaded", () => {
     if (item.dataset.section === "chat") focusChat();
     const settingsPanel = $("#settingsPanel");
     const knowledgePanel = $("#knowledgePanel");
+    const experiencePanel = $("#experiencePanel");
     const miningPanel = $("#miningPanel");
+    const followPanel = $("#followPanel");
     const isAutomation = item.dataset.section === "automation";
     const isKnowledge = item.dataset.section === "knowledge";
+    const isExperiences = item.dataset.section === "experiences";
     const isMining = item.dataset.section === "world";
     if (settingsPanel) settingsPanel.hidden = item.dataset.section !== "settings" && !isAutomation;
     if (knowledgePanel) knowledgePanel.hidden = !isKnowledge;
+    if (experiencePanel) experiencePanel.hidden = !isExperiences;
     if (miningPanel) miningPanel.hidden = !isMining;
+    if (followPanel) followPanel.hidden = !isMining;
     if (item.dataset.section === "settings" || isAutomation) {
       settingsPanel?.scrollIntoView({ behavior: "smooth", block: "start" });
       if (!state.automationInitialized) loadData({ silent: true });
     } else if (isKnowledge) {
       knowledgePanel?.scrollIntoView({ behavior: "smooth", block: "start" });
       loadKnowledgeBase();
+    } else if (isExperiences) {
+      experiencePanel?.scrollIntoView({ behavior: "smooth", block: "start" });
+      loadExperiences();
     } else if (isMining) {
       miningPanel?.scrollIntoView({ behavior: "smooth", block: "start" });
       loadMiningStatus();
