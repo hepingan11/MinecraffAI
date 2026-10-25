@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "minecraft-ai",
+  "version": "${version}",
+  "name": "Minecraft AI Local API",
+  "description": "Provides a loopback API for the Minecraft AI control console.",
+  "authors": ["Minecraft AI"],
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.minecraffai.mod.MinecraftAiClient"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~26.2-",
+    "java": ">=25"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "migrated_at": "2026-10-24T18:03:46.433200+00:00",
+  "programs": [
+    {
+      "name": "minecraft-chat-bridge.mjs",
+      "from": "C:\\Users\\Admin\\minecraft-chat-bridge.mjs",
+      "to": "F:\\Project\\MinecraffAI\\minecraft-chat-bridge.mjs",
+      "sha256": "69b53d95f80dd92fcdd9d5c1c4d1e4c8195e8c0121894b74bef9c3a888924cc8"
+    },
+    {
+      "name": "minecraft-chat-bridge.cmd",
+      "from": "C:\\Users\\Admin\\minecraft-chat-bridge.cmd",
+      "to": "F:\\Project\\MinecraffAI\\minecraft-chat-bridge.cmd",
+      "sha256": "c6e8af8aad7165b3e5f22bdb9957808a0b807bfdb0126b70be6b68b8850a382f"
+    }
+  ],
+  "conversation_messages": 45
+}

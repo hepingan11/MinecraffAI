@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0b1115" />
+  <title>Minecraft AI · 控制中心</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark"><span></span><span></span><span></span><span></span></div>
+        <div><strong>MINECRAFT</strong><small>AI CONTROL</small></div>
+      </div>
+
+      <div class="workspace-pill"><span class="live-dot"></span><span>本地工作区</span><b>●</b></div>
+      <nav class="nav-list" aria-label="主导航">
+        <button class="nav-item active" data-section="overview"><span class="nav-icon">⌂</span>总览</button>
+        <button class="nav-item" data-section="chat"><span class="nav-icon">◌</span>聊天中心</button>
+        <button class="nav-item" data-section="automation"><span class="nav-icon">◈</span>自动化</button>
+        <button class="nav-item" data-section="world"><span class="nav-icon">⌁</span>世界状态</button>
+      </nav>
+      <div class="nav-label">管理</div>
+      <nav class="nav-list">
+        <button class="nav-item" data-section="logs"><span class="nav-icon">▤</span>运行日志</button>
+        <button class="nav-item" data-section="settings"><span class="nav-icon">⚙</span>设置</button>
+        <button class="nav-item" data-section="knowledge"><span class="nav-icon">▤</span>知识库</button>
+      </nav>
+
+      <div class="sidebar-bottom">
+        <div class="version"><span class="status-dot"></span><span>Mod API 正常</span><small>v0.3.0</small></div>
+        <div class="profile"><div class="avatar">AI</div><div><strong>我的机器人</strong><small>本地管理员</small></div><span class="more">•••</span></div>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <div class="breadcrumb"><span>工作区</span><i>/</i><strong>控制中心</strong></div>
+        <div class="top-actions">
+          <button class="icon-button" id="refreshButton" title="刷新数据">↻</button>
+          <button class="icon-button" title="通知">♢<em></em></button>
+          <button class="outline-button" id="openChatButton"><span>＋</span> 快速发消息</button>
+        </div>
+      </header>
+
+      <div class="page-body">
+        <section class="welcome-row">
+          <div><p class="eyebrow" id="todayLabel">MINECRAFT AI · CONTROL CENTER</p><h1>晚上好，管理员 <span>✦</span></h1><p class="subheading">你的世界正在被稳稳守护，今天也来看看机器人。</p></div>
+          <div class="connection-controls">
+            <div class="connection-chip" id="connectionChip"><span class="status-dot"></span><span id="connectionText">正在检查连接…</span></div>
+            <label class="window-select-wrap" id="windowSelector" hidden><span>操作窗口</span><select id="windowSelect" aria-label="选择要操作的 Minecraft 窗口"><option value="">请选择窗口</option></select></label>
+          </div>
+        </section>
+
+        <section class="hero-card">
+          <div class="hero-copy"><div class="hero-tag">MINECRAFT AI · ONLINE</div><h2>让每一次冒险，<br /><span>都有人回应。</span></h2><p>从聊天到自动化，把你的 Minecraft 世界交给一个可靠的智能搭档。</p><button class="primary-button" id="heroChatButton">开始聊天 <span>→</span></button></div>
+          <div class="hero-art" aria-hidden="true"><div class="moon"></div><div class="pixel-cloud cloud-a"></div><div class="pixel-cloud cloud-b"></div><div class="mountain mountain-a"></div><div class="mountain mountain-b"></div><div class="ground"></div><div class="bot-orb"><span>✦</span></div></div>
+        </section>
+
+        <section class="metric-grid">
+          <article class="metric-card"><div class="metric-head"><span>聊天消息</span><span class="metric-icon green">◌</span></div><strong id="messageCount">—</strong><div class="metric-foot positive">↑ <span>实时读取</span></div></article>
+          <article class="metric-card"><div class="metric-head"><span>桥接延迟</span><span class="metric-icon purple">ϟ</span></div><strong>低</strong><div class="metric-foot">本地连接 · <span>稳定</span></div></article>
+          <article class="metric-card"><div class="metric-head"><span>运行状态</span><span class="metric-icon orange">◉</span></div><strong id="runtimeStatus">检查中</strong><div class="metric-foot"><span id="logStatus">等待同步</span></div></article>
+          <article class="metric-card"><div class="metric-head"><span>待扩展模块</span><span class="metric-icon blue">✧</span></div><strong>04</strong><div class="metric-foot">自动化 · 任务 · 更多</div></article>
+        </section>
+
+        <section class="content-grid">
+          <article class="panel chat-panel" id="chatPanel">
+            <div class="panel-header"><div><p class="panel-kicker">LIVE FEED</p><h3>游戏聊天</h3></div><button class="text-button" id="viewAllButton">查看全部 <span>→</span></button></div>
+            <div class="chat-feed" id="chatFeed"><div class="loading-state"><span class="spinner"></span>正在读取游戏日志…</div></div>
+            <form class="composer" id="messageForm"><div class="composer-icon">✦</div><input id="messageInput" maxlength="256" autocomplete="off" placeholder="输入一条消息，发送到 Minecraft…" /><button type="submit" class="send-button" title="发送">↑</button></form>
+          </article>
+
+          <div class="right-column">
+            <article class="panel quick-panel"><div class="panel-header"><div><p class="panel-kicker">SHORTCUTS</p><h3>快捷操作</h3></div><button class="kebab">•••</button></div><div class="quick-grid"><button class="quick-action" data-action="chat"><span class="quick-icon green">◌</span><b>发送消息</b><small>与游戏内玩家交流</small></button><button class="quick-action" data-action="refresh"><span class="quick-icon purple">↻</span><b>同步日志</b><small>读取最新聊天记录</small></button><button class="quick-action disabled" data-action="automation"><span class="quick-icon orange">◈</span><b>新建自动化</b><small>即将开放</small><span class="soon">SOON</span></button><button class="quick-action disabled" data-action="world"><span class="quick-icon blue">⌁</span><b>查看世界</b><small>即将开放</small><span class="soon">SOON</span></button></div></article>
+            <article class="panel activity-panel"><div class="panel-header"><div><p class="panel-kicker">SYSTEM</p><h3>最近活动</h3></div></div><div class="activity-list"><div class="activity-item"><span class="activity-line green"></span><div><b>控制台已启动</b><p>本地服务等待连接</p></div><time>刚刚</time></div><div class="activity-item"><span class="activity-line purple"></span><div><b>客户端 Mod API 就绪</b><p>支持程序级聊天控制</p></div><time>刚刚</time></div><div class="activity-item muted"><span class="activity-line"></span><div><b>更多能力即将到来</b><p>自动化、世界状态、任务</p></div><time>—</time></div></div></article>
+          </div>
+        </section>
+
+        <section class="panel settings-panel" id="settingsPanel" hidden>
+          <div class="panel-header"><div><p class="panel-kicker">AUTOMATION</p><h3>AI 自动回复</h3></div><span class="automation-state" id="automationState">未启用</span></div>
+          <form class="settings-form" id="automationForm">
+            <label class="switch-row"><span><b>启用自动回复</b><small>实时监听游戏聊天中的触发词</small></span><input id="automationEnabled" type="checkbox" /></label>
+            <div class="form-grid">
+              <label><span>触发名称（不含 @）</span><input id="triggerName" maxlength="80" placeholder="MinecraftAI" required /></label>
+              <label><span>目标 Minecraft 窗口</span><select id="automationWindowId"><option value="">单窗口时自动选择</option></select></label>
+              <label><span>Base URL</span><input id="aiBaseUrl" maxlength="500" placeholder="https://api.openai.com/v1" required /></label>
+              <label><span>模型</span><input id="aiModel" maxlength="200" placeholder="gpt-4o-mini" required /></label>
+              <label class="wide"><span>API Key <small id="apiKeyHint"></small></span><input id="aiApiKey" type="password" maxlength="1000" autocomplete="off" placeholder="留空则保留已保存的 Key" /></label>
+              <label><span>Temperature</span><input id="aiTemperature" type="number" min="0" max="2" step="0.1" /></label>
+              <label><span>最大回复 Token</span><input id="aiMaxTokens" type="number" min="16" max="2048" step="1" /></label>
+              <label class="wide"><span>系统提示词</span><textarea id="aiSystemPrompt" maxlength="8000" rows="5" required></textarea></label>
+            </div>
+            <div class="settings-actions"><button class="primary-button" type="submit">保存自动回复设置</button><span id="automationSaveStatus"></span></div>
+          </form>
+          <div class="automation-monitor" id="automationMonitor">等待配置</div>
+        </section>
+
+        <section class="panel knowledge-panel" id="knowledgePanel" hidden>
+          <div class="panel-header"><div><p class="panel-kicker">KNOWLEDGE BASE</p><h3>知识库</h3><small id="knowledgeCount">0 条知识</small></div><button class="outline-button" id="newKnowledgeButton" type="button">新增条目</button></div>
+          <form class="knowledge-form" id="knowledgeForm" hidden>
+            <input id="knowledgeId" type="hidden" />
+            <div class="form-grid">
+              <label><span>标题</span><input id="knowledgeTitle" maxlength="160" required placeholder="例如：服务器规则" /></label>
+              <label><span>关键词（逗号分隔）</span><input id="knowledgeKeywords" maxlength="1600" placeholder="规则, 生存服, 禁止" /></label>
+              <label class="wide"><span>内容</span><textarea id="knowledgeContent" maxlength="6000" rows="7" required placeholder="填写机器人可以参考的事实、规则或回答内容"></textarea></label>
+              <label class="knowledge-enabled"><input id="knowledgeEnabled" type="checkbox" checked /> 启用这条知识</label>
+            </div>
+            <div class="settings-actions"><button class="primary-button" type="submit">保存条目</button><button class="text-button" id="cancelKnowledgeButton" type="button">取消</button><span id="knowledgeSaveStatus"></span></div>
+          </form>
+          <div class="knowledge-list" id="knowledgeList"><div class="loading-state">正在读取知识库</div></div>
+        </section>
+
+        <section class="roadmap"><div><p class="panel-kicker">BUILDING THE FUTURE</p><h3>你的机器人，下一步想做什么？</h3><p>页面结构已经为更多能力留好位置。</p></div><div class="roadmap-tags"><span>自动化任务</span><span>定时提醒</span><span>世界监控</span><span>插件中心</span></div></section>
+        <section class="panel settings-panel" id="miningPanel" hidden>
+          <div class="panel-header"><div><p class="panel-kicker">MINING TASK</p><h3>第一阶段有限挖矿</h3></div><span class="automation-state" id="miningState">空闲</span></div>
+          <form class="settings-form" id="miningForm">
+            <div class="form-grid">
+              <label><span>挖矿模式</span><select id="miningStrategy"><option value="ore">目标矿石</option><option value="nearby">附近目标方块</option></select></label>
+              <label><span>目标方块 ID（逗号分隔）</span><input id="miningTargets" value="minecraft:coal_ore,minecraft:iron_ore" maxlength="600" required /></label>
+              <label><span>目标数量</span><input id="miningQuantity" type="number" min="1" max="256" value="8" required /></label>
+              <label><span>最大运行分钟</span><input id="miningMinutes" type="number" min="0.1" max="30" step="0.1" value="2" required /></label>
+              <label><span>最大挖掘方块数</span><input id="miningMaxBlocks" type="number" min="1" max="512" value="32" required /></label>
+              <label class="knowledge-enabled"><input id="miningReturnWhenFull" type="checkbox" /> 背包满时停止</label>
+            </div>
+            <div class="settings-actions"><button class="primary-button" type="submit" id="miningStartButton">开始挖矿</button><button class="outline-button" type="button" id="miningStopButton">停止</button><span id="miningSaveStatus"></span></div>
+          </form>
+          <pre class="automation-monitor" id="miningMonitor">等待任务</pre>
+        </section>
+
+      </div>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
