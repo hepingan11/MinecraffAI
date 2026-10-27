@@ -1,6 +1,10 @@
 import http from "node:http";
 import { readdir, readFile } from "node:fs/promises";
 import { PICKAXE_PRIORITY, recognizeMiningPickaxes } from "./mining-tools.mjs";
+import { setTimeout as delay } from "node:timers/promises";
+import { validateSchema } from "./tool-registry.mjs";
+import { SCAN_BLOCKS_SCHEMA, BREAK_BLOCK_SCHEMA, PLACE_BLOCK_SCHEMA, MOVE_TO_SCHEMA } from "./minecraft-atomic-schema.mjs";
+import { RECIPES_SCHEMA, CRAFT_SCHEMA } from "./minecraft-crafting-schema.mjs";
 
 const DEFAULT_REGISTRY_DIR = String.raw`G:\Game\[PCL启动器打包]RO26.2性能优化+生电轻量版 1.0.1\.minecraft\versions\[PCL启动器打包]RO26.2性能优化+生电轻量版\minecraft-ai\windows`;
 
@@ -8,7 +12,7 @@ export function getRegistryDir() {
   return process.env.MC_AI_REGISTRY_DIR?.trim() || DEFAULT_REGISTRY_DIR;
 }
 
-function requestJson(window, pathname, { method = "GET", body, timeoutMs = 4000 } = {}) {
+function requestJson(window, pathname, { method = "GET", body, timeoutMs = 4000, allowErrorBody = false } = {}) {
   return new Promise((resolve, reject) => {
     const payload = body === undefined ? "" : JSON.stringify(body);
     const request = http.request({
@@ -31,7 +35,7 @@ function requestJson(window, pathname, { method = "GET", body, timeoutMs = 4000 
       response.on("end", () => {
         let value;
         try { value = text ? JSON.parse(text) : {}; } catch { value = { ok: false, error: "Mod API 返回了无效 JSON" }; }
-        if ((response.statusCode ?? 500) < 200 || (response.statusCode ?? 500) >= 300 || value.ok === false) {
+        if ((response.statusCode ?? 500) < 200 || (response.statusCode ?? 500) >= 300 || (value.ok === false && !allowErrorBody)) {
           reject(new Error(value.error || `Mod API 请求失败（${response.statusCode ?? "unknown"}）`));
         } else {
           resolve(value);
@@ -146,7 +150,17 @@ export async function sendVoice(window, wavBuffer, { mode = "local" } = {}) {
     throw new Error("语音音频大小必须在 44 字节到 4 MB 之间");
   }
   if (!["local", "microphone"].includes(mode)) throw new Error("语音播放模式无效");
-  return requestBinary(window, `/voice?mode=${encodeURIComponent(mode)}`, wavBuffer, { contentType: "audio/wav", timeoutMs: 8000 });
+  const result = await requestBinary(window, `/voice?mode=${encodeURIComponent(mode)}`, wavBuffer, { contentType: "audio/wav", timeoutMs: 40_000 });
+  if (result.voiceBridgeVersion !== 2 || result.completed !== true) throw new Error("Mod 仅将语音入队，无法确认发送结果；请完全退出 Minecraft 后加载新版 Mod");
+  return result;
+}
+
+export async function getVoiceStatus(window) {
+  let result;
+  try { result = await requestJson(window, "/voice", { timeoutMs: 8000, allowErrorBody: true }); }
+  catch (error) { throw new Error(`无法检查语音接口：${error.message}；如尚未更新 Mod，请完全退出并重启 Minecraft`); }
+  if (result.voiceBridgeVersion !== 2) throw new Error("语音接口版本过旧，请完全退出 Minecraft 后加载新版 Mod");
+  return result;
 }
 
 export async function getInventory(window) {
@@ -155,6 +169,91 @@ export async function getInventory(window) {
 
 export async function getEnvironment(window) {
   return requestJson(window, "/environment", { timeoutMs: 8000 });
+}
+
+export async function scanBlocks(window, args = {}) {
+  validateSchema(args, SCAN_BLOCKS_SCHEMA);
+  const coordinates = ["x", "y", "z"].filter((key) => args[key] !== undefined);
+  if (coordinates.length && coordinates.length !== 3) throw new Error("扫描中心必须同时提供 x、y、z");
+  return requestJson(window, "/blocks/scan", { method: "POST", body: { radius: 8, maxResults: 32, ...args }, timeoutMs: 8000 });
+}
+
+/** Wait for a specific Mod operation, then return its observed terminal result.
+ * Cancellation also stops the physical operation instead of only abandoning HTTP. */
+async function runAtomicOperation(window, path, key, args, { signal, timeoutMs, onStarted, startPath = `${path}/start` } = {}) {
+  if (signal?.aborted) throw new Error("操作已取消");
+  let live;
+  let operationId;
+  let settled = false;
+  let operationError;
+  try {
+    live = await requestJson(window, startPath, { method: "POST", body: args, timeoutMs: 8000 });
+    const id = live?.[key]?.id;
+    if (!id) throw new Error("Mod 未返回操作 ID，请更新并重启 Mod");
+    operationId = id;
+    await onStarted?.(live[key]);
+    const deadline = Date.now() + timeoutMs;
+    while (live[key]?.active) {
+      if (signal?.aborted) throw new Error("操作已取消");
+      if (Date.now() >= deadline) throw new Error("等待 Mod 操作结果超时");
+      await delay(100, undefined, { signal });
+      live = await requestJson(window, `${path}/status`, { timeoutMs: 8000 });
+      if (live?.[key]?.id !== id) throw new Error("Mod 操作已被替换，停止等待");
+    }
+    settled = true;
+    if (live[key]?.state !== "completed") return { ...live, ok: false, executionError: live[key]?.message || live[key]?.state || "操作失败" };
+    return live;
+  } catch (error) {
+    operationError = error;
+    throw error;
+  } finally {
+    if (!settled && operationId) {
+      const stopping = await stopAndWait(window, path, key, operationId);
+      if (operationError && stopping?.[key]?.id === operationId) operationError.operationResult = stopping[key];
+    }
+  }
+}
+
+export function moveTo(window, args, options = {}) {
+  validateSchema(args, MOVE_TO_SCHEMA);
+  return runAtomicOperation(window, "/move", "move", { distance: 1, ...args }, { timeoutMs: 65_000, ...options });
+}
+
+export function breakBlock(window, args, options = {}) {
+  validateSchema(args, BREAK_BLOCK_SCHEMA);
+  return runAtomicOperation(window, "/blocks", "action", args, { timeoutMs: 25_000, ...options, startPath: "/blocks/break" });
+}
+
+export function placeBlock(window, args, options = {}) {
+  validateSchema(args, PLACE_BLOCK_SCHEMA);
+  return runAtomicOperation(window, "/blocks", "action", { face: "up", ...args }, { timeoutMs: 25_000, ...options, startPath: "/blocks/place" });
+}
+
+async function stopAndWait(window, path, key, operationId) {
+  let stopping = await requestJson(window, `${path}/stop`, { method: "POST", body: { taskId: operationId }, timeoutMs: 8000 });
+  // Crafting may need to wait for an outstanding server fill and recover materials.
+  const cleanupDeadline = Date.now() + 6000;
+  while (stopping?.[key]?.id === operationId && stopping[key].active && Date.now() < cleanupDeadline) {
+    await delay(100);
+    stopping = await requestJson(window, `${path}/status`, { timeoutMs: 8000 });
+  }
+  return stopping;
+}
+
+export function stopAtomicOperation(window, kind, operationId) {
+  if (!["move", "block_action", "craft"].includes(kind) || typeof operationId !== "string"
+      || !/^[0-9a-f-]{36}$/u.test(operationId)) throw new Error("原子操作类型或 ID 无效");
+  return stopAndWait(window, kind === "move" ? "/move" : kind === "craft" ? "/craft" : "/blocks", kind === "block_action" ? "action" : kind, operationId);
+}
+
+export async function getCraftingRecipes(window, args) {
+  validateSchema(args, RECIPES_SCHEMA);
+  return requestJson(window, "/craft/recipes", { method: "POST", body: { quantity: 1, maxResults: 16, ...args }, timeoutMs: 8000 });
+}
+
+export function craftItem(window, args, options = {}) {
+  validateSchema(args, CRAFT_SCHEMA);
+  return runAtomicOperation(window, "/craft", "craft", { quantity: 1, ...args }, { timeoutMs: 70_000, ...options });
 }
 
 export async function getState(window) {

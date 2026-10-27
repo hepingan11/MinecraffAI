@@ -15,10 +15,13 @@ export function parseMinecraftChat(chatText) {
       const arrow = prefix.match(/^(.*?)\s*(?:->|→)\s*(.+)$/u);
       if (arrow) {
         const sender = arrow[1].trim();
+        const recipientRaw = arrow[2].trim();
         const outgoing = /^(?:me|我)$/iu.test(sender);
         const name = sender.match(/^\[([\p{L}\p{N}_.-]{1,64}) head\]/u)?.[1]
           || (/^[\p{L}\p{N}_.-]{1,64}$/u.test(sender) ? sender : null);
-        return { speaker: outgoing ? null : name, text: chat.slice(index + 1).trim(), outgoing };
+        const recipient = recipientRaw.match(/^\[([\p{L}\p{N}_.-]{1,64}) head\]/u)?.[1]
+          || (/^[\p{L}\p{N}_.-]{1,64}$/u.test(recipientRaw) ? recipientRaw : null);
+        return { speaker: outgoing ? null : name, recipient, text: chat.slice(index + 1).trim(), outgoing };
       }
       break;
     }

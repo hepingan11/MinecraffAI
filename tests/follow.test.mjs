@@ -29,6 +29,7 @@ test("real server public/private chat formats identify the sender, not the recip
   ]) assert.deepEqual(followCommandFromChat(text), { action: "start", targetName: "He_ping_an" }, text);
   const outgoing = "[me -> [Guiwuli77 head]Guiwuli77] @Guiwuli77 跟随我";
   assert.equal(parseMinecraftChat(outgoing).outgoing, true);
+  assert.equal(parseMinecraftChat(outgoing).recipient, "Guiwuli77");
   assert.deepEqual(followCommandFromChat(outgoing), { action: "start", unresolvedSender: true });
   assert.deepEqual(followCommandFromChat("[[He_ping_an head]He_ping_an -> me] @Guiwuli77 停止跟随"), { action: "stop" });
   assert.equal(followCommandFromChat("[He_ping_an head]九华阁 He_ping_an: @Guiwuli77 你在跟随谁"), null);
@@ -142,7 +143,7 @@ test("authenticated discovery → selection → start, dashboard/CLI, stop and f
   assert.match(await feedbackService.generateReply("[Alex head]九华阁 Alex: @MinecraftAI 跟随我"), /暂未移动/u);
   let generated = 0;
   feedbackService.generateReply = async () => { generated++; return "已停止跟随。"; };
-  await feedbackService.processLine("[21:54:38] [Render thread/INFO]: [CHAT] [me -> [MinecraftAI head]MinecraftAI] @MinecraftAI 跟随我");
+  await feedbackService.processLine("[21:54:38] [Render thread/INFO]: [CHAT] [me -> [Alex head]Alex] @MinecraftAI 跟随我");
   assert.equal(generated, 0, "outgoing echo must not trigger another command");
   await feedbackService.processLine("[21:54:38] [Render thread/INFO]: [CHAT] [[Alex head]Alex -> me] @MinecraftAI 跟随我");
   assert.equal(generated, 1, "incoming private chat must trigger");
@@ -159,7 +160,7 @@ test("authenticated discovery → selection → start, dashboard/CLI, stop and f
   await new Promise((resolve) => portProbe.close(resolve));
   dashboard = spawn(process.execPath, ["minecraft-dashboard.mjs"], {
     cwd: path.resolve(import.meta.dirname, ".."),
-    env: { ...process.env, MC_DASHBOARD_PORT: String(port), MC_AI_CONFIG_PATH: path.join(temporary, "config.json") },
+    env: { ...process.env, MC_DASHBOARD_PORT: String(port), MC_AI_CONFIG_PATH: path.join(temporary, "config.json"), MC_AI_TASKS_PATH: path.join(temporary, "tasks.json"), MC_AI_KNOWLEDGE_PATH: path.join(temporary, "knowledge.json"), MC_AI_EXPERIENCE_PATH: path.join(temporary, "experiences.json") },
     windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
   });
   await Promise.race([

@@ -3,6 +3,7 @@ import process from "node:process";
 import { TextDecoder } from "node:util";
 import { discoverWindows, getEnvironment, getInventory, getMiningStatus, getObservation, getNearbyPlayers, getFollowStatus, publicWindow, sendChat, startMining, stopMining, validateMessage, validateMiningPlan } from "./minecraft-mod-api.mjs";
 import { executeFollowCommand } from "./follow-skill.mjs";
+import { executeTeleportCommand, validateTeleportPlan } from "./teleport-skill.mjs";
 
 const DEFAULT_LOG_PATH = String.raw`G:\Game\[PCL启动器打包]RO26.2性能优化+生电轻量版 1.0.1\.minecraft\versions\[PCL启动器打包]RO26.2性能优化+生电轻量版\logs\latest.log`;
 const decoder = new TextDecoder("gb18030");
@@ -35,8 +36,8 @@ function parseWindowId(args) {
 async function main() {
   const [command, ...rawArgs] = process.argv.slice(2);
   const logPath = process.env.MC_LOG_PATH ?? DEFAULT_LOG_PATH;
-  if (!command || !["read", "send", "windows", "inventory", "environment", "observe", "mine", "mining-status", "mining-stop", "players", "follow", "follow-status", "follow-stop"].includes(command)) {
-    throw new Error("用法: node minecraft-chat-bridge.mjs read [数量] | windows | inventory | environment | observe | mine | mining-status | mining-stop | players | follow [--player=名称] | follow-status | follow-stop");
+  if (!command || !["read", "send", "windows", "inventory", "environment", "observe", "mine", "mining-status", "mining-stop", "players", "follow", "follow-status", "follow-stop", "tp"].includes(command)) {
+    throw new Error("用法: node minecraft-chat-bridge.mjs read [数量] | windows | inventory | environment | observe | mine | mining-status | mining-stop | players | follow [--player=名称] | follow-status | follow-stop | tp --player=名称");
   }
 
   if (command === "read") {
@@ -51,7 +52,7 @@ async function main() {
     return;
   }
 
-  if (["players", "follow", "follow-status", "follow-stop"].includes(command)) {
+  if (["players", "follow", "follow-status", "follow-stop", "tp"].includes(command)) {
     const { windowId, args } = parseWindowId(rawArgs);
     if (!windows.length) throw new Error("未检测到 Minecraft 窗口");
     if (windows.length > 1 && !windowId) throw new Error("检测到多个 Minecraft 窗口，请指定 --window-id");
@@ -61,6 +62,7 @@ async function main() {
     const minutes = args.find((arg) => arg.startsWith("--minutes="))?.slice(10);
     const result = command === "players" ? await getNearbyPlayers(selected)
       : command === "follow-status" ? await getFollowStatus(selected)
+        : command === "tp" ? await executeTeleportCommand(selected, { action: "request", ...validateTeleportPlan({ targetName: args.find((arg) => arg.startsWith("--player="))?.slice(9) }) })
         : await executeFollowCommand(selected, {
           action: command === "follow-stop" ? "stop" : "start",
           targetName: args.find((arg) => arg.startsWith("--player="))?.slice(9),

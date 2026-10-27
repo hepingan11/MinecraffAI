@@ -90,22 +90,25 @@
               <label><span>目标 Minecraft 窗口</span><select id="automationWindowId"><option value="">单窗口时自动选择</option></select></label>
               <label><span>Base URL</span><input id="aiBaseUrl" maxlength="500" placeholder="https://api.openai.com/v1" required /></label>
               <label><span>模型</span><input id="aiModel" maxlength="200" placeholder="gpt-4o-mini" required /></label>
-              <label><span>语音 Base URL <small>留空使用 AI Base URL</small></span><input id="voiceBaseUrl" maxlength="500" placeholder="留空则使用上面的 Base URL" /></label>
+              <label><span>语音 Base URL <small id="voiceBaseUrlHint">留空使用 AI Base URL</small></span><input id="voiceBaseUrl" maxlength="500" placeholder="留空则使用上面的 Base URL" /></label>
               <label><span>语音模型</span><input id="voiceModel" maxlength="200" placeholder="gpt-4o-mini-tts" required /></label>
               <label><span>语音音色</span><input id="voiceName" maxlength="80" placeholder="alloy" required /></label>
               <label class="wide"><span>API Key <small id="apiKeyHint"></small></span><input id="aiApiKey" type="password" maxlength="1000" autocomplete="off" placeholder="留空则保留已保存的 Key" /></label>
               <label><span>Temperature</span><input id="aiTemperature" type="number" min="0" max="2" step="0.1" /></label>
               <label><span>最大回复 Token</span><input id="aiMaxTokens" type="number" min="16" max="2048" step="1" /></label>
-              <label><span>语音接口</span><select id="voiceProvider"><option value="openai">OpenAI 兼容</option><option value="voicerss">VoiceRSS 免费（350 次/天）</option></select></label>
+              <label><span>历史消息条数 <small>1～100 条</small></span><input id="contextMessages" type="number" min="1" max="100" step="1" /></label>
+              <label><span>历史上下文字符数 <small>256～30000</small></span><input id="contextChars" type="number" min="256" max="30000" step="1" /></label>
+              <label><span>语音接口</span><select id="voiceProvider"><option value="openai">OpenAI 兼容</option><option value="voicerss">VoiceRSS 免费（350 次/天）</option><option value="qwen">千问 TTS（实时语音合成）</option></select></label>
               <label><span>播放方式</span><select id="voiceOutput"><option value="local">本机播放（推荐）</option><option value="microphone">模拟麦克风发送给玩家</option></select></label>
-              <label><span>VoiceRSS API Key <small id="voiceApiKeyHint"></small></span><input id="voiceApiKey" type="password" maxlength="1000" autocomplete="off" placeholder="选择 VoiceRSS 时填写" /></label>
+              <label><span>语音 API Key <small id="voiceApiKeyHint"></small></span><input id="voiceApiKey" type="password" maxlength="1000" autocomplete="off" placeholder="VoiceRSS / 千问 TTS 的独立 Key" /></label>
               <label class="wide"><span>系统提示词</span><textarea id="aiSystemPrompt" maxlength="8000" rows="5" required></textarea></label>
               <label><span>语音语言</span><input id="voiceLanguage" maxlength="20" value="zh-cn" placeholder="zh-cn" required /></label>
               <label><span>语音速度</span><input id="voiceRate" type="number" min="-10" max="10" step="1" value="0" /></label>
             </div>
-            <div class="settings-actions"><button class="primary-button" type="submit">保存自动回复设置</button><span id="automationSaveStatus"></span></div>
+            <div class="settings-actions"><button class="primary-button" type="submit">保存自动回复设置</button><button class="outline-button" type="button" id="voiceCheckButton">检查语音连接</button><span id="automationSaveStatus"></span></div>
           </form>
           <div class="automation-monitor" id="automationMonitor">等待配置</div>
+          <div class="automation-monitor" id="voiceMonitor">模拟麦克风由附近其他玩家收听，发送者默认听不到自己的声音。</div>
         </section>
 
         <section class="panel knowledge-panel" id="knowledgePanel" hidden>

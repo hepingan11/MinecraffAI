@@ -4,9 +4,19 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { TextDecoder } from "node:util";
-import { discoverWindows, getEnvironment, getInventory, getMiningStatus, getObservation, getNearbyPlayers, getFollowStatus, setFollowSafety, publicWindow, sendChat, startMining, stopMining, validateMessage, validateMiningPlan, validateFollowPlan } from "./minecraft-mod-api.mjs";
+import { discoverWindows, getEnvironment, getInventory, getMiningStatus, getObservation, getNearbyPlayers, getFollowStatus, setFollowSafety, getVoiceStatus, publicWindow, sendChat, startMining, stopMining, validateMessage, validateMiningPlan, validateFollowPlan } from "./minecraft-mod-api.mjs";
 import { executeFollowCommand, followCommandFromChat } from "./follow-skill.mjs";
+import { executeTeleportCommand, teleportCommandFromChat, validateTeleportPlan } from "./teleport-skill.mjs";
 import { AutoReplyService } from "./auto-reply.mjs";
+import { ToolRegistry } from "./tool-registry.mjs";
+import { ToolExecutor } from "./tool-executor.mjs";
+import { registerAtomicTools } from "./minecraft-atomic-tools.mjs";
+import { registerCraftingTools } from "./minecraft-crafting-tools.mjs";
+import { exploreForOre, registerExplorationTools } from "./minecraft-exploration-tools.mjs";
+import { stopAtomicOperation } from "./minecraft-mod-api.mjs";
+import { EventQueue } from "./event-queue.mjs";
+import { MinecraftEventSource } from "./minecraft-event-source.mjs";
+import { TaskStateStore } from "./task-state.mjs";
 import { KnowledgeBase, MAX_ENTRIES } from "./knowledge-base.mjs";
 import { ExperienceStore, MAX_EXPERIENCES } from "./experience-store.mjs";
 
@@ -18,6 +28,39 @@ const DEFAULT_LOG_PATH = String.raw`G:\Game\[PCL启动器打包]RO26.2性能优�
 const decoder = new TextDecoder("gb18030");
 const knowledgeBase = new KnowledgeBase();
 const experienceStore = new ExperienceStore();
+const eventQueue = new EventQueue();
+const taskState = new TaskStateStore();
+const eventSource = new MinecraftEventSource({ queue: eventQueue });
+const SKILL_NAMES = ["inventory", "environment", "observe", "mining", "explore_for_ore", "players", "follow", "teleport", "tasks", "scan_blocks", "move_to", "break_block", "place_block", "recipes", "craft"];
+const SKILL_HEADINGS = {
+  recipes: /^## 技能：minecraft_recipes\b/mu,
+  craft: /^## 技能：minecraft_craft\b/mu,
+  scan_blocks: /^## 技能：minecraft_scan_blocks\b/mu,
+  move_to: /^## 技能：minecraft_move_to\b/mu,
+  break_block: /^## 技能：minecraft_break_block\b/mu,
+  place_block: /^## 技能：minecraft_place_block\b/mu,
+  inventory: /^## 技能：minecraft_inventory\b/mu,
+  environment: /^## 技能：minecraft_environment\b/mu,
+  observe: /^## 技能：minecraft_observe\b/mu,
+  mining: /^## 技能：minecraft_mining\b/mu,
+  explore_for_ore: /^## 技能：minecraft_explore_for_ore\b/mu,
+  players: /^## 技能：minecraft_players\b/mu,
+  follow: /^## 技能：minecraft_players\b/mu,
+  teleport: /^## 技能：minecraft_teleport\b/mu,
+  tasks: /^## 统一事件与任务状态\s*$/mu,
+};
+
+async function readMinecraftSkill(name) {
+  const normalized = String(name ?? "").trim().toLowerCase();
+  if (!SKILL_NAMES.includes(normalized)) throw new Error(`未知 Minecraft 技能文档：${normalized || "(empty)"}`);
+  const source = await readFile(path.join(ROOT, "skill.md"), "utf8");
+  const match = SKILL_HEADINGS[normalized].exec(source);
+  if (!match) throw new Error(`技能文档不存在：minecraft_${normalized}`);
+  const rest = source.slice(match.index);
+  const end = rest.indexOf("\n## 技能：");
+  const content = (end >= 0 ? rest.slice(0, end) : rest).trim();
+  return { ok: true, skill: `minecraft_${normalized}`, content: content.slice(0, 12_000), truncated: content.length > 12_000 };
+}
 
 function miningPlanFromChat(text) {
   const source = String(text ?? "").replace(/@[^\s]+/u, " ");
@@ -51,10 +94,220 @@ async function startMiningAndVerify(window, plan) {
   return { started, status };
 }
 
+async function registerTask(kind, window, goal, result) {
+  const live = result?.status?.mining || result?.status?.follow || result?.follow || result?.mining;
+  if (result?.executionError || live?.active === false) return result;
+  const task = await taskState.create({
+    kind,
+    windowId: window.id,
+    goal,
+    target: kind === "follow" ? { name: live?.targetName || goal.targetName || null, uuid: live?.targetUuid || goal.targetUuid || null } : { blocks: goal.targetBlocks || [] },
+    params: goal,
+    resumePolicy: "safe",
+  });
+  await taskState.markStarted(task.id);
+  return { ...result, taskId: task.id, task: taskState.get(task.id) };
+}
+
+async function resumeMinecraftTask(task, window) {
+  if (task.kind === "mining") return startMiningAndVerify(window, validateMiningPlan(task.params || task.goal));
+  if (task.kind === "follow") return executeFollowCommand(window, { action: "start", ...validateFollowPlan(task.params || task.goal) });
+  if (task.kind === "ore_exploration") {
+    const requested = Number(task.params?.quantity ?? task.goal?.quantity ?? 1);
+    const collected = Number(task.progress?.collected ?? 0);
+    return exploreForOre(window, { ...(task.params || task.goal), quantity: Math.max(1, requested - collected) }, { taskState, existingTask: task });
+  }
+  throw new Error(`不支持续跑任务类型：${task.kind}`);
+}
+
+async function cancelMinecraftTask(task, window) {
+  if (!task) throw new Error("任务不存在");
+  if (String(task.windowId) !== String(window.id)) throw new Error("任务属于另一 Minecraft 窗口");
+  if (["pending", "running", "paused", "interrupted"].includes(task.status)) {
+    if (task.kind === "ore_exploration") {
+      const active = activeExplorationTasks.get(task.id);
+      if (active) active.cancelled = true;
+      return taskState.cancel(task.id, "用户取消寻矿任务");
+    }
+    if (["move", "block_action", "craft"].includes(task.kind)) {
+      const stopped = await stopAtomicOperation(window, task.kind, task.progress.operationId);
+      const live = stopped[task.kind === "block_action" ? "action" : task.kind];
+      if (!live || live.id !== task.progress.operationId || live.active) throw new Error("停止请求尚未确认，请再次观察任务状态");
+      if (live.state !== "cancelled") return taskState.update(task.id, {
+        status: live.state === "completed" ? "succeeded" : "failed", finishedAt: new Date().toISOString(),
+        progress: { ...task.progress, ...live, operationId: live.id },
+        failure: live.state === "completed" ? null : { failed: true, retryable: false, score: 0, reason: live.message },
+      });
+    }
+  }
+  return taskState.cancel(task.id);
+}
+
+const minecraftTools = new ToolRegistry();
+const activeExplorationTasks = new Map();
+registerAtomicTools(minecraftTools, { taskState });
+registerCraftingTools(minecraftTools, { taskState });
+registerExplorationTools(minecraftTools, { taskState, activeTasks: activeExplorationTasks });
+minecraftTools
+  .register({
+    name: "minecraft_observe",
+    description: "读取当前玩家、位置、环境和正在执行的 Minecraft 任务。需要实时事实时先调用此工具。",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    readOnly: true,
+    handler: (_args, context) => getObservation(context.window),
+  })
+  .register({
+    name: "minecraft_inventory",
+    description: "读取当前玩家的非空背包槽位和物品状态。",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    readOnly: true,
+    handler: (_args, context) => getInventory(context.window),
+  })
+  .register({
+    name: "minecraft_environment",
+    description: "读取当前位置、维度、玩家状态、附近实体和周边方块。",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    readOnly: true,
+    handler: (_args, context) => getEnvironment(context.window),
+  })
+  .register({
+    name: "minecraft_skill",
+    description: "读取后端维护的 Minecraft 技能说明和参数边界；这是参考文档，不会直接执行游戏动作。",
+    parameters: {
+      type: "object",
+      properties: { name: { type: "string", enum: SKILL_NAMES.map((name) => `minecraft_${name}`) } },
+      required: ["name"],
+      additionalProperties: false,
+    },
+    readOnly: true,
+    handler: (args) => readMinecraftSkill(args.name.replace(/^minecraft_/u, "")),
+  })
+  .register({
+    name: "minecraft_mining",
+    description: "开始、查询或停止受后端限制的挖矿任务。开始前必须提供明确的目标或使用 nearby 模式。",
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["start", "status", "stop"], description: "默认 start" },
+        strategy: { type: "string", enum: ["ore", "nearby"] },
+        targetBlocks: { type: "array", minItems: 1, maxItems: 8, items: { type: "string", pattern: "^minecraft:[a-z0-9_./-]+$" } },
+        quantity: { type: "integer", minimum: 1, maximum: 256 },
+        maxMinutes: { type: "number", exclusiveMinimum: 0, maximum: 30 },
+        maxBlocks: { type: "integer", minimum: 1, maximum: 512 },
+        returnWhenFull: { type: "boolean" },
+      },
+      additionalProperties: false,
+    },
+    handler: async (args, context) => {
+      const action = args.action || "start";
+      if (action === "status") return { ...(await getMiningStatus(context.window)), tasks: taskState.list({ windowId: context.window.id, kind: "mining" }) };
+      if (action === "stop") {
+        const result = await stopMining(context.window);
+        await taskState.cancelActive({ windowId: context.window.id, kind: "mining" });
+        return result;
+      }
+      const plan = validateMiningPlan({ ...args, action: undefined });
+      return registerTask("mining", context.window, plan, await startMiningAndVerify(context.window, plan));
+    },
+  })
+  .register({
+    name: "minecraft_players",
+    description: "识别 32 格内可跟随的其他玩家，并按距离返回。",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    readOnly: true,
+    handler: (_args, context) => getNearbyPlayers(context.window),
+  })
+  .register({
+    name: "minecraft_follow",
+    description: "开始、查询、停止跟随或设置跟随安全模式。所有目标和距离参数由后端再次校验。",
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["start", "status", "stop", "safety"] },
+        target: { type: "string", enum: ["nearest", "sender"] },
+        targetName: { type: "string", pattern: "^[\\p{L}\\p{N}_.-]{1,64}$" },
+        targetUuid: { type: "string", pattern: "^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$" },
+        followDistance: { type: "number", minimum: 2, maximum: 6 },
+        maxMinutes: { type: "number", exclusiveMinimum: 0, maximum: 30 },
+        ignoreSafety: { type: "boolean" },
+      },
+      additionalProperties: false,
+    },
+    handler: async (args, context) => {
+      const action = args.action || "start";
+      if (action === "status") return { ...(await getFollowStatus(context.window)), tasks: taskState.list({ windowId: context.window.id, kind: "follow" }) };
+      if (action === "stop") {
+        const result = await executeFollowCommand(context.window, { action: "stop" });
+        await taskState.cancelActive({ windowId: context.window.id, kind: "follow" });
+        return result;
+      }
+      if (action === "safety") return setFollowSafety(context.window, args.ignoreSafety === true);
+      const command = { action: "start" };
+      if (args.targetName !== undefined) command.targetName = args.targetName;
+      if (args.targetUuid !== undefined) command.targetUuid = args.targetUuid;
+      if (args.target === "sender") {
+        const parsed = followCommandFromChat(context.chatText);
+        if (!parsed || parsed.action !== "start") throw new Error("无法从当前聊天确认要跟随的发送者");
+        Object.assign(command, parsed);
+      } else if (args.target !== "nearest" && !args.targetName && !args.targetUuid) {
+        command.target = "nearest";
+      }
+      if (args.followDistance !== undefined) command.followDistance = args.followDistance;
+      if (args.maxMinutes !== undefined) command.maxMinutes = args.maxMinutes;
+      if (args.ignoreSafety !== undefined) command.ignoreSafety = args.ignoreSafety;
+      validateFollowPlan(command);
+      return registerTask("follow", context.window, command, await executeFollowCommand(context.window, command));
+    },
+  })
+  .register({
+    name: "minecraft_tasks",
+    description: "读取通用任务状态、失败评估，并按后端策略续跑或取消任务。",
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["list", "status", "resume", "cancel"] },
+        taskId: { type: "string", pattern: "^[a-zA-Z0-9_-]{1,100}$" },
+      },
+      additionalProperties: false,
+    },
+    readOnly: false,
+    handler: async (args, context) => {
+      const action = args.action || "list";
+      if (action === "list") return taskState.state();
+      if (!args.taskId) throw new Error("该任务操作必须提供 taskId");
+      if (action === "status") return taskState.get(args.taskId) || { ok: false, executionError: "任务不存在" };
+      const current = taskState.get(args.taskId);
+      if (!current) throw new Error("任务不存在");
+      if (current.windowId && String(current.windowId) !== String(context.window.id)) throw new Error("任务属于另一 Minecraft 窗口，拒绝跨窗口续跑");
+      if (action === "cancel") return cancelMinecraftTask(current, context.window);
+      return taskState.resume(args.taskId, (task) => resumeMinecraftTask(task, context.window));
+    },
+  })
+  .register({
+    name: "minecraft_teleport",
+    description: "向当前聊天发送者发送传送请求。目标身份只由后端从真实聊天前缀解析。",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    readOnly: false,
+    handler: (args, context) => {
+      if (Object.keys(args).length) throw new Error("传送工具不接受目标 ID，目标必须来自当前聊天发送者");
+      const command = teleportCommandFromChat(context.chatText, context.triggerName);
+      if (!command || command.action !== "request") throw new Error("当前消息不是向聊天发送者发起传送请求");
+      validateTeleportPlan(command);
+      return executeTeleportCommand(context.window, command);
+    },
+  });
+
+const toolExecutor = new ToolExecutor({ registry: minecraftTools });
+
 const autoReply = new AutoReplyService({
   getLogPath: () => process.env.MC_LOG_PATH ?? DEFAULT_LOG_PATH,
   knowledgeBase,
   experienceStore,
+  toolRegistry: minecraftTools,
+  eventQueue,
+  eventSource,
+  taskState,
+  toolExecutor,
   skillExecutor: async (skill, window, chatText) => {
     if (skill === "minecraft_observe") return getObservation(window);
     if (skill === "minecraft_inventory") return getInventory(window);
@@ -64,6 +317,11 @@ const autoReply = new AutoReplyService({
       const command = followCommandFromChat(chatText);
       if (!command) throw new Error("未识别到明确的跟随指令");
       return executeFollowCommand(window, command);
+    }
+    if (skill === "minecraft_teleport") {
+      const command = teleportCommandFromChat(chatText, autoReply.config.triggerName);
+      if (!command) throw new Error("未识别到明确的传送指令");
+      return executeTeleportCommand(window, command);
     }
     throw new Error(`未知技能：${skill}`);
   },
@@ -168,6 +426,12 @@ async function api(req, res, url) {
         endpoint: "/api/skills/minecraft_mining",
         readOnly: false,
       }, {
+        name: "minecraft_explore_for_ore",
+        description: "分阶段扫描已加载区域，安全导航、重新验证并挖掘矿物；不足时继续步行探索新区域",
+        method: "POST",
+        endpoint: "/api/skills/minecraft_explore_for_ore",
+        readOnly: false,
+      }, {
         name: "minecraft_players",
         description: "识别 32 格内可跟随的其他玩家，按距离排序",
         method: "GET",
@@ -179,7 +443,40 @@ async function api(req, res, url) {
         method: "POST/GET",
         endpoint: "/api/skills/minecraft_follow",
         readOnly: false,
-      }],
+      }, {
+        name: "minecraft_teleport",
+        description: "从聊天发送者中解析玩家 ID，并向该玩家发送 /tpa 请求",
+        method: "POST",
+        endpoint: "/api/skills/minecraft_teleport",
+        readOnly: false,
+      }, {
+        name: "minecraft_tasks",
+        description: "读取统一任务状态、失败评估并续跑或取消任务",
+        method: "POST",
+        endpoint: "/api/tasks",
+        readOnly: false,
+      }, ...["minecraft_recipes", "minecraft_craft"].map((name) => ({
+        name, description: minecraftTools.get(name).description,
+        method: "POST", endpoint: `/api/skills/${name}`, readOnly: minecraftTools.get(name).readOnly,
+      }))],
+    });
+  }
+
+  // Numen-style public tool book: schemas are exposed, handlers stay backend-only.
+  if (req.method === "GET" && url.pathname === "/api/tools") {
+    return json(res, 200, {
+      ok: true,
+      tools: minecraftTools.list().map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+        readOnly: tool.readOnly,
+      })),
+      executor: {
+        busy: toolExecutor.busy,
+        current: toolExecutor.current()?.id || null,
+        outstanding: toolExecutor.outstanding(),
+      },
     });
   }
 
@@ -216,6 +513,44 @@ async function api(req, res, url) {
 
   if (req.method === "GET" && url.pathname === "/api/automation/config") {
     return json(res, 200, { ok: true, ...(await autoReply.getPublicState()) });
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/events") {
+    return json(res, 200, { ok: true, events: eventQueue.recent(validateLimit(url.searchParams.get("limit"))), pending: eventQueue.peek(), queue: eventQueue.state() });
+  }
+
+  if (url.pathname === "/api/tasks") {
+    try {
+      if (req.method === "GET") return json(res, 200, { ok: true, ...taskState.state() });
+      if (req.method !== "POST") return json(res, 405, { ok: false, error: "任务接口只支持 GET 或 POST" });
+      const body = await readBody(req);
+      const action = body?.action || "list";
+      if (action === "list") return json(res, 200, { ok: true, ...taskState.state() });
+      if (typeof body?.taskId !== "string" || !body.taskId.trim()) throw new Error("任务操作必须提供 taskId");
+      if (action === "status") return json(res, 200, { ok: true, task: taskState.get(body.taskId) });
+      if (action === "cancel") {
+        const task = taskState.get(body.taskId);
+        if (!task) throw new Error("任务不存在");
+        const selected = await selectMinecraftWindow(body.windowId || task.windowId);
+        return json(res, 200, { ok: true, task: await cancelMinecraftTask(task, selected) });
+      }
+      if (action === "resume") {
+        const task = taskState.get(body.taskId);
+        if (!task) throw new Error("任务不存在");
+        const selected = await selectMinecraftWindow(body.windowId || task.windowId);
+        return json(res, 200, { ok: true, ...(await taskState.resume(body.taskId, (item) => resumeMinecraftTask(item, selected))) });
+      }
+      throw new Error("不支持的任务操作");
+    } catch (error) { return json(res, 400, { ok: false, error: error.message }); }
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/voice/status") {
+    try {
+      const selected = await selectMinecraftWindow(url.searchParams.get("windowId") || autoReply.config.windowId || undefined);
+      return json(res, 200, { ok: true, windowId: selected.id, voice: await getVoiceStatus(selected) });
+    } catch (error) {
+      return json(res, 400, { ok: false, error: error.message });
+    }
   }
 
   if (req.method === "PUT" && url.pathname === "/api/automation/config") {
@@ -360,7 +695,24 @@ async function api(req, res, url) {
       const result = safety ? await setFollowSafety(selected, body.ignoreSafety)
         : stopping ? await executeFollowCommand(selected, { action: "stop" })
           : req.method === "GET" ? await getFollowStatus(selected) : await executeFollowCommand(selected, { ...plan, action: "start" });
-      return json(res, 200, { ok: true, skill: "minecraft_follow", action: safety ? "safety" : stopping ? "stop" : req.method === "GET" ? "status" : "start", windowId: selected.id, result });
+      if (stopping) {
+        autoReply.stopFollowMonitor(selected.id);
+        await taskState.cancelActive({ windowId: selected.id, kind: "follow" });
+      }
+      else if (!safety && req.method === "POST" && result?.follow?.active === true) autoReply.startFollowMonitor(selected, result);
+      const tracked = !safety && !stopping && req.method === "POST" ? await registerTask("follow", selected, plan, result) : result;
+      return json(res, 200, { ok: true, skill: "minecraft_follow", action: safety ? "safety" : stopping ? "stop" : req.method === "GET" ? "status" : "start", windowId: selected.id, result: tracked });
+    } catch (error) { return json(res, 400, { ok: false, error: error.message }); }
+  }
+
+  if (url.pathname === "/api/skills/minecraft_teleport") {
+    if (req.method !== "POST") return json(res, 405, { ok: false, error: "传送技能只支持 POST" });
+    try {
+      const body = await readBody(req);
+      const selected = await selectMinecraftWindow(body.windowId);
+      const plan = validateTeleportPlan(body);
+      const result = await executeTeleportCommand(selected, { action: "request", ...plan });
+      return json(res, 200, { ok: true, skill: "minecraft_teleport", action: "request", windowId: selected.id, result });
     } catch (error) { return json(res, 400, { ok: false, error: error.message }); }
   }
 
@@ -371,6 +723,7 @@ async function api(req, res, url) {
       if (url.pathname.endsWith("/stop")) {
         if (req.method !== "POST") return json(res, 405, { ok: false, error: "停止挖矿只支持 POST" });
         const result = await stopMining(selected);
+        await taskState.cancelActive({ windowId: selected.id, kind: "mining" });
         return json(res, 200, { ok: true, skill: "minecraft_mining", action: "stop", windowId: selected.id, result });
       }
       if (req.method === "GET") {
@@ -379,7 +732,7 @@ async function api(req, res, url) {
       }
       if (req.method !== "POST") return json(res, 405, { ok: false, error: "挖矿技能只支持 GET 或 POST" });
       const plan = validateMiningPlan(body);
-      const result = await startMining(selected, plan);
+      const result = await registerTask("mining", selected, plan, await startMining(selected, plan));
       return json(res, 200, { ok: true, skill: "minecraft_mining", action: "start", windowId: selected.id, plan, result });
     } catch (error) {
       return json(res, 400, { ok: false, error: error.message });
@@ -394,6 +747,21 @@ async function api(req, res, url) {
     } catch (error) {
       return json(res, 503, { ok: false, error: "暂时无法读取游戏日志", detail: error.message });
     }
+  }
+
+  const atomicSkill = url.pathname.match(/^\/api\/skills\/(minecraft_(?:scan_blocks|move_to|break_block|place_block|recipes|craft|explore_for_ore))$/u);
+  if (atomicSkill) {
+    if (req.method !== "POST") return json(res, 405, { ok: false, error: "原子动作接口只支持 POST" });
+    const controller = new AbortController();
+    const disconnected = () => { if (!res.writableEnded) controller.abort("客户端已断开"); };
+    res.on("close", disconnected);
+    try {
+      const { windowId, ...args } = await readBody(req);
+      const selected = await selectMinecraftWindow(windowId);
+      const result = await minecraftTools.invoke(atomicSkill[1], args, { window: selected, signal: controller.signal });
+      return json(res, result.ok === false ? 400 : 200, { ...result, windowId: selected.id });
+    } catch (error) { return json(res, 400, { ok: false, error: error.message }); }
+    finally { res.off("close", disconnected); }
   }
 
   if (req.method === "POST" && url.pathname === "/api/message") {
@@ -458,7 +826,7 @@ const server = createServer(async (req, res) => {
   }
 });
 
-Promise.all([knowledgeBase.load(), experienceStore.load()]).catch((error) => {
+Promise.all([knowledgeBase.load(), experienceStore.load(), taskState.load()]).catch((error) => {
   autoReply.status.lastError = error.message;
   console.error(`Minecraft AI persistent store startup failed: ${error.message}`);
 }).then(() => autoReply.start()).catch((error) => {

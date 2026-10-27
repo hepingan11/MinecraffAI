@@ -69,8 +69,14 @@ function renderAutomationWindows() {
     option.textContent = `${window.title || "Minecraft"} #${option.value}`;
     select.appendChild(option);
   });
-  const configured = state.automation?.config?.windowId ?? selected;
-  if (configured && state.windows.some((window) => String(window.id) === configured)) select.value = configured;
+  const configured = select.dataset.edited === "true" ? selected : state.automation?.config?.windowId ?? selected;
+  if (configured && !state.windows.some((window) => String(window.id) === configured)) {
+    const option = document.createElement("option");
+    option.value = configured;
+    option.textContent = `#${configured}（已离线，请重新选择）`;
+    select.appendChild(option);
+  }
+  select.value = configured || "";
 }
 
 function renderAutomation(value) {
@@ -93,6 +99,8 @@ function renderAutomation(value) {
     $("#voiceRate").value = config.voiceRate ?? 0;
     $("#aiTemperature").value = config.temperature ?? 0.7;
     $("#aiMaxTokens").value = config.maxTokens ?? 256;
+    $("#contextMessages").value = config.contextMessages ?? 16;
+    $("#contextChars").value = config.contextChars ?? 6000;
     $("#aiSystemPrompt").value = config.systemPrompt ?? "";
     state.automationInitialized = true;
   }
@@ -103,15 +111,46 @@ function renderAutomation(value) {
   const status = value.status ?? {};
   $("#automationMonitor").textContent = status.lastError
     ? `错误：${status.lastError}`
-    : `已处理 ${status.processed ?? 0} 条聊天，已回复 ${status.replied ?? 0} 条${status.lastSkills?.length ? `，最近技能 ${status.lastSkills.join("、")}` : ""}${status.lastReplyAt ? `，最近回复 ${status.lastReplyAt}` : ""}${config.voiceReplyEnabled ? `，语音播放 ${status.voicePlayed ?? 0} 条` : ""}${status.lastVoiceError ? `，语音错误：${status.lastVoiceError}` : ""}`;
+    : `已处理 ${status.processed ?? 0} 条聊天，已回复 ${status.replied ?? 0} 条${status.lastSkills?.length ? `，最近技能 ${status.lastSkills.join("、")}` : ""}${status.lastReplyAt ? `，最近回复 ${status.lastReplyAt}` : ""}${config.voiceReplyEnabled ? `，语音完成 ${status.voicePlayed ?? 0} 条` : ""}${status.lastVoiceError ? `，语音错误：${status.lastVoiceError}` : ""}`;
 }
 
-function updateVoiceProviderFields() {
+async function checkVoiceConnection() {
+  const monitor = $("#voiceMonitor");
+  const button = $("#voiceCheckButton");
+  button.disabled = true;
+  monitor.textContent = "正在检查语音连接…";
+  try {
+    const windowId = $("#automationWindowId").value || state.automation?.config?.windowId || "";
+    const response = await fetch(`/api/voice/status?windowId=${encodeURIComponent(windowId)}`, { cache: "no-store" });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || "语音检查失败");
+    const voice = result.voice;
+    monitor.textContent = `窗口 #${result.windowId}：${voice.microphoneReady ? `附近语音已就绪，距离 ${voice.distance} 格` : voice.microphoneError || "麦克风上行未就绪"}。最近发送：${voice.state}${voice.lastError ? `，${voice.lastError}` : ""}。模拟麦克风由附近另一位玩家收听，发送者默认没有回放。`;
+  } catch (error) {
+    monitor.textContent = error.message;
+  } finally { button.disabled = false; }
+}
+
+function updateVoiceProviderFields(event) {
   const provider = $("#voiceProvider")?.value;
   const voice = $("#voiceName");
   const base = $("#voiceBaseUrl");
   const model = $("#voiceModel");
   if (!provider || !voice) return;
+  if (event?.type === "change") {
+    voice.value = provider === "qwen" ? "Cherry" : provider === "voicerss" ? "Luli" : "alloy";
+    model.value = provider === "qwen" ? "qwen3-tts-flash-realtime" : "gpt-4o-mini-tts";
+    base.value = "";
+  }
+  const qwen = provider === "qwen";
+  $("#voiceBaseUrlHint").textContent = qwen ? "留空使用千问官方 WebSocket 地址" : "留空使用 AI Base URL";
+  base.placeholder = qwen ? "wss://cn-beijing.maas.qianwenaiapi.com/api-ws/v1/realtime" : "留空则使用上面的 Base URL";
+  model.placeholder = qwen ? "qwen3-tts-flash-realtime" : "gpt-4o-mini-tts";
+  voice.placeholder = qwen ? "Cherry / Serena / Ethan" : provider === "voicerss" ? "Luli" : "alloy";
+  $("#voiceApiKey").placeholder = qwen ? "填写千问平台 API Key，留空保留已保存的 Key" : "选择 VoiceRSS 时填写，留空保留已保存的 Key";
+  $("#voiceApiKey").disabled = provider === "openai";
+  $("#voiceLanguage").disabled = provider === "openai";
+  $("#voiceRate").disabled = provider === "openai";
   if (provider === "voicerss") {
     if (!voice.value || voice.value === "alloy") voice.value = "Luli";
     if (base) base.disabled = true;
@@ -141,6 +180,8 @@ async function saveAutomation(event) {
     voice: $("#voiceName").value,
     temperature: Number($("#aiTemperature").value),
     maxTokens: Number($("#aiMaxTokens").value),
+    contextMessages: Number($("#contextMessages").value),
+    contextChars: Number($("#contextChars").value),
     systemPrompt: $("#aiSystemPrompt").value,
   };
   const apiKey = $("#aiApiKey").value;
@@ -155,6 +196,7 @@ async function saveAutomation(event) {
     if (!response.ok || !result.ok) throw new Error(result.error || "保存失败");
     $("#aiApiKey").value = "";
     $("#voiceApiKey").value = "";
+    $("#automationWindowId").dataset.edited = "false";
     renderAutomation(result);
     status.textContent = "已保存";
     showToast("自动回复设置已保存");
@@ -508,6 +550,8 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#messageForm").addEventListener("submit", sendMessage);
   $("#automationForm").addEventListener("submit", saveAutomation);
   $("#voiceProvider")?.addEventListener("change", updateVoiceProviderFields);
+  $("#voiceCheckButton")?.addEventListener("click", checkVoiceConnection);
+  $("#automationWindowId")?.addEventListener("change", (event) => { event.target.dataset.edited = "true"; });
   $("#miningForm")?.addEventListener("submit", startMining);
   $("#miningStopButton")?.addEventListener("click", stopMining);
   $("#followSafetyButton")?.addEventListener("click", toggleFollowSafety);

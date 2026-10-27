@@ -10,6 +10,10 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.core.Direction;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.inventory.ContainerInput;
 import net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket;
 import org.slf4j.Logger;
@@ -69,8 +73,18 @@ public final class MinecraftAiClient implements ClientModInitializer {
     private ScheduledExecutorService voiceExecutor;
     private final AtomicInteger queuedVoiceTasks = new AtomicInteger();
     private Object plasmoVoiceLoopback;
+    private volatile String voiceTaskState = "idle";
+    private volatile String voiceTaskError;
+    private volatile String voiceTaskMode;
+    private volatile int voiceFramesSent;
+    private volatile String voiceTaskUpdatedAt;
     private MiningTask miningTask;
     private ScheduledFuture<?> followTicker;
+    private ScheduledFuture<?> atomicTicker;
+    private AtomicTask atomicTask;
+    private ScheduledFuture<?> moveTicker;
+    private MoveTask moveTask;
+    private CraftingController crafting;
     private FollowTask followTask;
     private boolean followIgnoreSafetyDefault;
     private static final double PLAYER_SCAN_RADIUS = 32.0;
@@ -98,6 +112,18 @@ public final class MinecraftAiClient implements ClientModInitializer {
         server.createContext("/state", exchange -> withAuth(exchange, this::handleState));
         server.createContext("/inventory", exchange -> withAuth(exchange, this::handleInventory));
         server.createContext("/environment", exchange -> withAuth(exchange, this::handleEnvironment));
+        server.createContext("/blocks/scan", exchange -> withAuth(exchange, this::handleBlockScan));
+        server.createContext("/blocks/break", exchange -> withAuth(exchange, this::handleBlockBreak));
+        server.createContext("/blocks/place", exchange -> withAuth(exchange, this::handleBlockPlace));
+        server.createContext("/blocks/status", exchange -> withAuth(exchange, e -> followRequest(e, "GET", this::atomicStatusResponse)));
+        server.createContext("/blocks/stop", exchange -> withAuth(exchange, e -> handleOperationStop(e, false)));
+        server.createContext("/move/start", exchange -> withAuth(exchange, this::handleMoveStart));
+        server.createContext("/move/status", exchange -> withAuth(exchange, e -> followRequest(e, "GET", this::moveStatusResponse)));
+        server.createContext("/move/stop", exchange -> withAuth(exchange, e -> handleOperationStop(e, true)));
+        server.createContext("/craft/recipes", exchange -> withAuth(exchange, e -> handleCraftRequest(e, "recipes")));
+        server.createContext("/craft/start", exchange -> withAuth(exchange, e -> handleCraftRequest(e, "start")));
+        server.createContext("/craft/status", exchange -> withAuth(exchange, e -> followRequest(e, "GET", crafting::status)));
+        server.createContext("/craft/stop", exchange -> withAuth(exchange, e -> handleCraftRequest(e, "stop")));
         server.createContext("/mining/start", exchange -> withAuth(exchange, this::handleMiningStart));
         server.createContext("/mining/status", exchange -> withAuth(exchange, this::handleMiningStatus));
         server.createContext("/mining/stop", exchange -> withAuth(exchange, this::handleMiningStop));
@@ -113,17 +139,18 @@ public final class MinecraftAiClient implements ClientModInitializer {
             thread.setDaemon(true);
             return thread;
         }));
-        server.start();
         miningExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
             Thread thread = new Thread(runnable, "minecraft-ai-mining");
             thread.setDaemon(true);
             return thread;
         });
+        crafting = new CraftingController(client, miningExecutor);
         voiceExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
             Thread thread = new Thread(runnable, "minecraft-ai-voice");
             thread.setDaemon(true);
             return thread;
         });
+        server.start();
         port = server.getAddress().getPort();
         writeRegistry();
     }
@@ -162,6 +189,9 @@ public final class MinecraftAiClient implements ClientModInitializer {
     }
 
     private void stopApi() {
+        if (crafting != null) crafting.shutdown();
+        if (atomicTicker != null) atomicTicker.cancel(false);
+        if (moveTicker != null) moveTicker.cancel(false);
         stopMiningTicker();
         stopFollowTicker();
         if (miningExecutor != null) miningExecutor.shutdownNow();
@@ -190,14 +220,16 @@ public final class MinecraftAiClient implements ClientModInitializer {
         JsonObject response = baseResponse();
         response.addProperty("title", safeTitle());
         response.addProperty("connected", client.player != null && client.level != null);
+        response.addProperty("atomicActionsVersion", 1);
+        response.addProperty("craftingVersion", 1);
         respond(exchange, 200, response);
     }
 
     private void handleState(HttpExchange exchange) throws IOException {
-        if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
-            respond(exchange, 405, error("只支持 GET"));
-            return;
-        }
+        followRequest(exchange, "GET", this::stateResponse);
+    }
+
+    private JsonObject stateResponse() {
         JsonObject response = baseResponse();
         response.addProperty("connected", client.player != null && client.level != null);
         response.addProperty("observedAt", Instant.now().toString());
@@ -212,13 +244,19 @@ public final class MinecraftAiClient implements ClientModInitializer {
         if (client.level != null) response.addProperty("world", client.level.dimension().identifier().toString());
         if (miningTask != null) response.add("mining", miningTask.toJson());
         if (followTask != null) response.add("follow", followTask.toJson());
-        respond(exchange, 200, response);
+        if (moveTask != null) response.add("move", moveTask.toJson());
+        if (atomicTask != null) response.add("action", atomicTask.toJson());
+        if (crafting != null && crafting.status().has("craft")) response.add("craft", crafting.status().get("craft"));
+        return response;
     }
 
     private String currentActivity() {
         if (client.player == null || client.level == null) return "disconnected";
         if (miningTask != null && miningTask.isActive()) return "mining";
         if (followTask != null && followTask.isActive()) return "following";
+        if (crafting != null && crafting.isActive()) return "crafting";
+        if (moveTask != null && moveTask.active) return "moving";
+        if (atomicTask != null && atomicTask.active) return atomicTask.kind.equals("break") ? "breaking" : "placing";
         if (client.gameMode != null && client.gameMode.isDestroying()) return "breaking";
         if (client.player.input != null && client.player.input.hasForwardImpulse()) return "moving";
         return "idle";
@@ -230,6 +268,7 @@ public final class MinecraftAiClient implements ClientModInitializer {
             case "following" -> followTask == null ? "正在执行跟随任务" : followTask.message;
             case "breaking" -> "正在破坏方块";
             case "moving" -> "正在移动";
+            case "crafting" -> "正在执行合成任务";
             case "idle" -> "当前没有自动动作";
             default -> "Minecraft 尚未进入世界";
         };
@@ -271,14 +310,31 @@ public final class MinecraftAiClient implements ClientModInitializer {
         }
     }
 
-    /**
-     * Accepts a short WAV file from the local Node service and plays it through
-     * Plasmo Voice's client loopback source. The endpoint never sends audio to
-     * a server; it only uses the voice mod's local output chain.
-     */
+    /** Reports the real voice transport state; POST completes only after playback/transmission. */
     private void handleVoice(HttpExchange exchange) throws IOException {
+        if ("GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+            JsonObject response = baseResponse();
+            response.addProperty("voiceBridgeVersion", 2);
+            response.addProperty("state", voiceTaskState);
+            response.addProperty("mode", voiceTaskMode);
+            response.addProperty("framesSent", voiceFramesSent);
+            response.addProperty("lastError", voiceTaskError);
+            response.addProperty("updatedAt", voiceTaskUpdatedAt);
+            try {
+                var context = PlasmoVoiceBridge.prepare(plasmoVoiceClient());
+                response.addProperty("microphoneReady", true);
+                response.addProperty("channel", String.valueOf(PlasmoVoiceBridge.call(context.activation(), "getName")));
+                response.addProperty("distance", ((Number) PlasmoVoiceBridge.call(context.activation(), "getDistance")).intValue());
+                response.addProperty("captureSampleRate", context.sampleRate());
+            } catch (Exception error) {
+                response.addProperty("microphoneReady", false);
+                response.addProperty("microphoneError", error.getMessage());
+            }
+            respond(exchange, 200, response);
+            return;
+        }
         if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
-            respond(exchange, 405, error("只支持 POST"));
+            respond(exchange, 405, error("只支持 GET 或 POST"));
             return;
         }
         try {
@@ -291,30 +347,53 @@ public final class MinecraftAiClient implements ClientModInitializer {
             }
             PcmAudio audio = decodeWav(readBytes(exchange, MAX_AUDIO_BYTES));
             if (audio.samples().length == 0) throw new IllegalArgumentException("语音音频为空");
-            boolean microphoneMode = "mode=microphone".equalsIgnoreCase(exchange.getRequestURI().getQuery());
+            String query = exchange.getRequestURI().getQuery();
+            if (query != null && !Set.of("mode=local", "mode=microphone").contains(query)) throw new IllegalArgumentException("语音播放模式无效");
+            boolean microphoneMode = "mode=microphone".equals(query);
+            if (microphoneMode) {
+                if (client.player == null || client.level == null) throw new IllegalStateException("Minecraft 尚未进入世界");
+                PlasmoVoiceBridge.prepare(plasmoVoiceClient());
+            }
             Object source = microphoneMode ? null : ensureVoiceSource();
-            int queued = queuedVoiceTasks.incrementAndGet();
-            if (queued > 2) {
-                queuedVoiceTasks.decrementAndGet();
-                respond(exchange, 429, error("语音播放队列已满，请稍后重试"));
+            if (!queuedVoiceTasks.compareAndSet(0, 1)) {
+                respond(exchange, 429, error("已有语音正在发送，请稍后重试"));
                 return;
             }
-            voiceExecutor.execute(() -> {
+            voiceTaskState = "sending";
+            voiceTaskMode = microphoneMode ? "microphone" : "local";
+            voiceTaskError = null;
+            voiceFramesSent = 0;
+            voiceTaskUpdatedAt = Instant.now().toString();
+            var task = voiceExecutor.submit(() -> {
                 try {
-                    if (microphoneMode) broadcastVoice(audio.samples());
+                    if (microphoneMode) voiceFramesSent = PlasmoVoiceBridge.send(PlasmoVoiceBridge.prepare(plasmoVoiceClient()), audio.samples(), VOICE_SAMPLE_RATE);
                     else playVoice(source, audio.samples());
+                    voiceTaskState = "completed";
+                    return true;
                 } catch (Throwable error) {
+                    voiceTaskState = "error";
+                    voiceTaskError = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
                     LOGGER.warn(microphoneMode ? "Minecraft AI microphone voice failed" : "Minecraft AI voice playback failed", error);
+                    throw new IllegalStateException(voiceTaskError, error);
                 } finally {
+                    voiceTaskUpdatedAt = Instant.now().toString();
                     queuedVoiceTasks.decrementAndGet();
                 }
             });
+            try {
+                task.get(MAX_AUDIO_SECONDS + 5, TimeUnit.SECONDS);
+            } catch (Exception error) {
+                task.cancel(true);
+                throw new IllegalStateException(voiceTaskError == null ? "语音发送超时或已中断" : voiceTaskError, error);
+            }
             JsonObject response = baseResponse();
-            response.addProperty("queued", true);
+            response.addProperty("voiceBridgeVersion", 2);
+            response.addProperty("completed", true);
+            response.addProperty("framesSent", voiceFramesSent);
             response.addProperty("mode", microphoneMode ? "microphone" : "local");
             response.addProperty("sampleRate", VOICE_SAMPLE_RATE);
             response.addProperty("durationMs", Math.round(audio.samples().length * 1000.0 / VOICE_SAMPLE_RATE));
-            respond(exchange, 202, response);
+            respond(exchange, 200, response);
         } catch (UnsupportedOperationException error) {
             respond(exchange, 503, error(error.getMessage()));
         } catch (Exception error) {
@@ -369,51 +448,6 @@ public final class MinecraftAiClient implements ClientModInitializer {
         }
     }
 
-    private void broadcastVoice(short[] samples) throws Exception {
-        VoiceCaptureContext context = ensureVoiceCapture();
-        boolean started = false;
-        try {
-            for (int offset = 0; offset < samples.length; offset += 960) {
-                int length = Math.min(960, samples.length - offset);
-                short[] frame = new short[960];
-                System.arraycopy(samples, offset, frame, 0, length);
-                byte[] encoded = (byte[]) invokeDeclared(context.capture(), "encode", context.encoder(), frame);
-                if (encoded == null || encoded.length == 0) throw new IllegalStateException("Plasmo Voice 编码器未返回音频数据");
-                invokeDeclared(context.capture(), "sendVoicePacket", context.activation(), false, encoded);
-                started = true;
-                if (offset + length < samples.length) Thread.sleep(Math.max(1L, Math.round(length * 1000.0 / VOICE_SAMPLE_RATE)));
-            }
-        } finally {
-            if (started) invokeDeclared(context.capture(), "sendVoiceEndPacket", context.activation());
-        }
-    }
-
-    private VoiceCaptureContext ensureVoiceCapture() throws Exception {
-        Object voiceClient = plasmoVoiceClient();
-        Object capture = invoke(voiceClient, "getAudioCapture");
-        if (capture == null) throw new UnsupportedOperationException("Plasmo Voice 音频捕获模块不可用");
-        if (Boolean.TRUE.equals(invoke(capture, "isServerMuted"))) throw new UnsupportedOperationException("服务器已将当前玩家静音");
-        Object encoderOptional = invoke(capture, "getDefaultMonoEncoder");
-        if (!Boolean.TRUE.equals(invoke(encoderOptional, "isPresent"))) throw new UnsupportedOperationException("Plasmo Voice 尚未连接语音服务器");
-        Object encoder = invoke(encoderOptional, "get");
-        Object activationManager = invoke(voiceClient, "getActivationManager");
-        Object activations = invoke(activationManager, "getActivations");
-        Object selected = null;
-        for (Object activation : (Iterable<?>) activations) {
-            String translation = String.valueOf(invoke(activation, "getTranslation"));
-            if ("pv.activation.parent".equals(translation)) continue;
-            Object activationEncoder = invoke(activation, "getMonoEncoder");
-            if (Boolean.TRUE.equals(invoke(activationEncoder, "isPresent"))) {
-                selected = activation;
-                break;
-            }
-        }
-        if (selected == null) throw new UnsupportedOperationException("Plasmo Voice 没有可用的语音激活通道");
-        Object selectedEncoderOptional = invoke(selected, "getMonoEncoder");
-        if (Boolean.TRUE.equals(invoke(selectedEncoderOptional, "isPresent"))) encoder = invoke(selectedEncoderOptional, "get");
-        return new VoiceCaptureContext(capture, selected, encoder);
-    }
-
     private void closeVoiceSource() {
         Object source = plasmoVoiceLoopback;
         plasmoVoiceLoopback = null;
@@ -445,26 +479,6 @@ public final class MinecraftAiClient implements ClientModInitializer {
 
     private Object invoke(Object target, String method) throws Exception {
         return invoke(target, method, new Class<?>[0]);
-    }
-
-    private Object invokeDeclared(Object target, String method, Object... arguments) throws Exception {
-        Class<?> type = target.getClass();
-        while (type != null) {
-            for (java.lang.reflect.Method candidate : type.getDeclaredMethods()) {
-                if (!candidate.getName().equals(method) || candidate.getParameterCount() != arguments.length) continue;
-                candidate.setAccessible(true);
-                try {
-                    return candidate.invoke(target, arguments);
-                } catch (InvocationTargetException error) {
-                    Throwable cause = error.getCause();
-                    if (cause instanceof Exception exception) throw exception;
-                    if (cause instanceof Error fatal) throw fatal;
-                    throw error;
-                }
-            }
-            type = type.getSuperclass();
-        }
-        throw new NoSuchMethodException(method);
     }
 
     private byte[] readBytes(HttpExchange exchange, int maxBytes) throws IOException {
@@ -562,7 +576,6 @@ public final class MinecraftAiClient implements ClientModInitializer {
     }
 
     private record PcmAudio(short[] samples) {}
-    private record VoiceCaptureContext(Object capture, Object activation, Object encoder) {}
 
     private void handleInventory(HttpExchange exchange) throws IOException {
         if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
@@ -768,6 +781,7 @@ public final class MinecraftAiClient implements ClientModInitializer {
         catch (Exception failure) { respond(exchange, 400, error(failure.getMessage() == null ? "跟随参数无效" : failure.getMessage())); return; }
         followRequest(exchange, "POST", () -> {
             requireFollowWorld();
+            requireNoAtomicTask();
             if (miningTask != null && miningTask.isActive()) throw new IllegalStateException("正在挖矿，请先停止挖矿再开始跟随");
             if (followTask != null && followTask.isActive()) throw new IllegalStateException("已有跟随任务，请先停止后再选择玩家");
             String unsafe = followSafetyReason();
@@ -1055,6 +1069,539 @@ public final class MinecraftAiClient implements ClientModInitializer {
         return response;
     }
 
+    private void handleCraftRequest(HttpExchange exchange, String operation) throws IOException {
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) { respond(exchange, 405, error("只支持 POST")); return; }
+        final JsonObject body;
+        try { body = JsonParser.parseString(readBody(exchange)).getAsJsonObject(); }
+        catch (Exception failure) { respond(exchange, 400, error("合成请求必须是 JSON 对象")); return; }
+        followRequest(exchange, "POST", () -> {
+            if (operation.equals("recipes")) return crafting.query(body);
+            if (operation.equals("stop")) {
+                if (body.size() != 1 || !body.has("taskId") || !body.get("taskId").isJsonPrimitive() || !body.getAsJsonPrimitive("taskId").isString()) throw new IllegalArgumentException("必须提供合成操作 taskId");
+                return crafting.cancel(body.get("taskId").getAsString());
+            }
+            requireAtomicWorld(); requireNoAtomicTask();
+            if (miningTask != null && miningTask.isActive() || followTask != null && followTask.isActive()) throw new IllegalStateException("请先停止挖矿或跟随任务再合成");
+            return crafting.start(body);
+        });
+    }
+
+    private void handleOperationStop(HttpExchange exchange, boolean movement) throws IOException {
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) { respond(exchange, 405, error("只支持 POST")); return; }
+        final String taskId;
+        try { taskId = JsonParser.parseString(readBody(exchange)).getAsJsonObject().get("taskId").getAsString(); }
+        catch (Exception failure) { respond(exchange, 400, error("必须提供操作 taskId")); return; }
+        followRequest(exchange, "POST", () -> {
+            if (movement) {
+                if (moveTask == null || !moveTask.id.equals(taskId)) throw new IllegalStateException("移动操作 ID 不匹配");
+                finishMove("cancelled", "移动已取消"); return moveStatusResponse();
+            }
+            if (atomicTask == null || !atomicTask.id.equals(taskId)) throw new IllegalStateException("方块操作 ID 不匹配");
+            finishAtomic("cancelled", "方块操作已取消"); return atomicStatusResponse();
+        });
+    }
+
+    private void handleBlockScan(HttpExchange exchange) throws IOException {
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+            respond(exchange, 405, error("只支持 POST"));
+            return;
+        }
+        final JsonObject body;
+        try { body = JsonParser.parseString(readBody(exchange)).getAsJsonObject(); }
+        catch (Exception failure) { respond(exchange, 400, error("扫描参数无效")); return; }
+        CompletableFuture<JsonObject> result = new CompletableFuture<>();
+        client.execute(() -> {
+            if (result.isDone()) return;
+            try { result.complete(scanBlocksResponse(body)); }
+            catch (Throwable failure) { result.completeExceptionally(failure); }
+        });
+        respondOnFuture(exchange, result, "无法扫描方块");
+    }
+
+    private void handleBlockBreak(HttpExchange exchange) throws IOException {
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+            respond(exchange, 405, error("只支持 POST"));
+            return;
+        }
+        final JsonObject body;
+        try { body = JsonParser.parseString(readBody(exchange)).getAsJsonObject(); }
+        catch (Exception failure) { respond(exchange, 400, error("破坏方块参数无效")); return; }
+        CompletableFuture<JsonObject> result = new CompletableFuture<>();
+        client.execute(() -> {
+            if (result.isDone()) return;
+            try { result.complete(breakBlockResponse(body)); }
+            catch (Throwable failure) { result.completeExceptionally(failure); }
+        });
+        respondOnFuture(exchange, result, "无法破坏方块");
+    }
+
+    private void handleBlockPlace(HttpExchange exchange) throws IOException {
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+            respond(exchange, 405, error("只支持 POST"));
+            return;
+        }
+        final JsonObject body;
+        try { body = JsonParser.parseString(readBody(exchange)).getAsJsonObject(); }
+        catch (Exception failure) { respond(exchange, 400, error("放置方块参数无效")); return; }
+        CompletableFuture<JsonObject> result = new CompletableFuture<>();
+        client.execute(() -> {
+            if (result.isDone()) return;
+            try { result.complete(placeBlockResponse(body)); }
+            catch (Throwable failure) { result.completeExceptionally(failure); }
+        });
+        respondOnFuture(exchange, result, "无法放置方块");
+    }
+
+    private void respondOnFuture(HttpExchange exchange, CompletableFuture<JsonObject> result, String fallback) throws IOException {
+        try {
+            respond(exchange, 200, result.get(5, TimeUnit.SECONDS));
+        } catch (java.util.concurrent.TimeoutException failure) {
+            result.cancel(false);
+            respond(exchange, 504, error("Minecraft 客户端响应超时"));
+        } catch (Exception failure) {
+            Throwable cause = failure instanceof java.util.concurrent.ExecutionException && failure.getCause() != null
+                ? failure.getCause() : failure;
+            respond(exchange, 400, error(cause.getMessage() == null ? fallback : cause.getMessage()));
+        }
+    }
+
+    private void requireAtomicWorld() {
+        if (client.player == null || client.level == null || client.gameMode == null) throw new IllegalStateException("Minecraft 尚未进入世界");
+    }
+
+    private void requireNoAtomicTask() {
+        if (crafting != null && crafting.isActive()) throw new IllegalStateException("合成任务正在运行，请先停止合成");
+        if (atomicTask != null && atomicTask.active) throw new IllegalStateException("方块操作正在运行，请先停止");
+        if (moveTask != null && moveTask.active) throw new IllegalStateException("移动任务正在运行，请先停止");
+    }
+
+    private void requireAtomicSafety() {
+        requireAtomicWorld();
+        if (client.player.isSpectator() || !client.player.isAlive()) throw new IllegalStateException("玩家当前不能执行方块操作");
+        if (client.player.getHealth() <= 6.0F || client.player.getFoodData().getFoodLevel() <= 6) throw new IllegalStateException("玩家生命或饥饿值过低，已拒绝方块操作");
+        if (client.player.isInLava() || client.player.isPassenger() || client.player.getAbilities().flying) throw new IllegalStateException("玩家当前处于不安全状态");
+        requireMiningInventoryAccess();
+        if (miningTask != null && miningTask.isActive()) throw new IllegalStateException("挖矿任务正在运行，请先停止任务");
+        if (followTask != null && followTask.isActive()) throw new IllegalStateException("跟随任务正在运行，请先停止任务");
+    }
+
+    private BlockPos requestBlockPosition(JsonObject body) {
+        if (body == null || !body.has("x") || !body.has("y") || !body.has("z")) throw new IllegalArgumentException("必须提供 x、y、z 坐标");
+        if (!body.get("x").isJsonPrimitive() || !body.get("y").isJsonPrimitive() || !body.get("z").isJsonPrimitive()
+            || !body.getAsJsonPrimitive("x").isNumber() || !body.getAsJsonPrimitive("y").isNumber() || !body.getAsJsonPrimitive("z").isNumber()) {
+            throw new IllegalArgumentException("x、y、z 必须是数字");
+        }
+        double x = body.get("x").getAsDouble();
+        double y = body.get("y").getAsDouble();
+        double z = body.get("z").getAsDouble();
+        if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)
+            || x != Math.rint(x) || y != Math.rint(y) || z != Math.rint(z)) throw new IllegalArgumentException("x、y、z 必须是整数");
+        if (x < -30_000_000 || x > 30_000_000 || z < -30_000_000 || z > 30_000_000 || y < -64 || y > 320) {
+            throw new IllegalArgumentException("坐标超出允许范围");
+        }
+        return new BlockPos((int) x, (int) y, (int) z);
+    }
+
+    private void requireBlockDistance(BlockPos pos, double maxDistance) {
+        double distance = Math.sqrt(client.player.distanceToSqr(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5));
+        if (!Double.isFinite(distance) || distance > maxDistance) throw new IllegalArgumentException("目标方块距离过远，最大允许距离为 " + maxDistance + " 格");
+    }
+
+    private JsonObject blockPositionJsonWithDistance(BlockPos pos) {
+        JsonObject json = MiningTask.blockPositionJson(pos);
+        json.addProperty("distance", Math.sqrt(client.player.distanceToSqr(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5)));
+        return json;
+    }
+
+    private JsonObject scanBlocksResponse(JsonObject body) {
+        requireAtomicWorld();
+        validateAtomicBody(body, Set.of("x", "y", "z", "radius", "maxResults", "blocks"), Set.of());
+        for (String name : List.of("radius", "maxResults")) {
+            if (body.has(name) && (!body.get(name).isJsonPrimitive() || !body.getAsJsonPrimitive(name).isNumber()
+                || !Double.isFinite(body.get(name).getAsDouble()) || body.get(name).getAsDouble() != Math.rint(body.get(name).getAsDouble()))) throw new IllegalArgumentException(name + " 必须是整数");
+        }
+        int radius = integerField(body, "radius", 1, 16, 8);
+        int maxResults = integerField(body, "maxResults", 1, 64, 32);
+        if (body.has("radius") && (body.get("radius").getAsDouble() < 1 || body.get("radius").getAsDouble() > 16)
+            || body.has("maxResults") && (body.get("maxResults").getAsDouble() < 1 || body.get("maxResults").getAsDouble() > 64)) throw new IllegalArgumentException("扫描范围或结果数量超限");
+        Set<String> filters = new HashSet<>();
+        if (body.has("blocks")) {
+            if (!body.get("blocks").isJsonArray() || body.getAsJsonArray("blocks").size() < 1 || body.getAsJsonArray("blocks").size() > 16) throw new IllegalArgumentException("blocks 必须包含 1 到 16 个方块 ID");
+            for (var item : body.getAsJsonArray("blocks")) {
+                if (!item.isJsonPrimitive() || !item.getAsJsonPrimitive().isString()) throw new IllegalArgumentException("blocks 只能包含字符串");
+                String id = item.getAsString().trim().toLowerCase(Locale.ROOT);
+                if (!id.matches("minecraft:[a-z0-9_./-]+")) throw new IllegalArgumentException("方块 ID 无效");
+                filters.add(id);
+            }
+        }
+        BlockPos center = body.has("x") || body.has("y") || body.has("z") ? requestBlockPosition(body) : client.player.blockPosition();
+        requireBlockDistance(center, 32.0);
+        JsonArray blocks = new JsonArray();
+        List<BlockPos> candidates = new ArrayList<>();
+        for (int y = -radius; y <= radius; y++) for (int x = -radius; x <= radius; x++) for (int z = -radius; z <= radius; z++) {
+            BlockPos pos = center.offset(x, y, z);
+            if (!client.level.isLoaded(pos)) continue;
+            var state = client.level.getBlockState(pos);
+            if (state.isAir()) continue;
+            String id = state.getBlock().builtInRegistryHolder().getRegisteredName();
+            if (!filters.isEmpty() && !filters.contains(id)) continue;
+            candidates.add(pos);
+        }
+        candidates.sort(Comparator.comparingDouble(pos -> client.player.distanceToSqr(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5)));
+        for (BlockPos pos : candidates) {
+            if (blocks.size() >= maxResults) break;
+            JsonObject item = blockPositionJsonWithDistance(pos);
+            item.addProperty("blockId", client.level.getBlockState(pos).getBlock().builtInRegistryHolder().getRegisteredName());
+            item.addProperty("loaded", true);
+            item.addProperty("visible", visibleHit(pos) != null);
+            item.addProperty("inReach", client.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(pos)) <= 4.5 * 4.5);
+            blocks.add(item);
+        }
+        JsonObject response = baseResponse();
+        response.add("center", MiningTask.blockPositionJson(center));
+        response.addProperty("radius", radius);
+        response.addProperty("dimension", client.level.dimension().identifier().toString());
+        response.addProperty("maxResults", maxResults);
+        response.add("blocks", blocks);
+        response.addProperty("matchedCount", candidates.size());
+        response.addProperty("truncated", candidates.size() > maxResults);
+        return response;
+    }
+
+    private void requireAtomicActionAvailable() {
+        requireAtomicSafety();
+        requireNoAtomicTask();
+        if (client.isPaused() || client.gui.screen() != null) throw new IllegalStateException("游戏已暂停或界面打开，无法执行方块操作");
+    }
+
+    private JsonObject breakBlockResponse(JsonObject body) {
+        requireAtomicActionAvailable();
+        validateAtomicBody(body, Set.of("x", "y", "z", "dimension", "expectedBlockId"), Set.of("x", "y", "z", "dimension", "expectedBlockId"));
+        requireDimension(body);
+        BlockPos pos = requestBlockPosition(body);
+        requireInteractionReach(pos);
+        if (!client.level.isLoaded(pos)) throw new IllegalStateException("目标区块尚未加载");
+        var state = client.level.getBlockState(pos);
+        String blockId = state.getBlock().builtInRegistryHolder().getRegisteredName();
+        if (state.isAir()) throw new IllegalStateException("目标位置是空气");
+        if (!body.has("expectedBlockId") || !blockId.equals(body.get("expectedBlockId").getAsString())) throw new IllegalStateException("目标方块已变化，请重新扫描");
+        if (state.getDestroySpeed(client.level, pos) < 0) throw new IllegalStateException("目标方块不可破坏");
+        if (pos.getY() < client.player.getY() && Math.abs(pos.getX() + 0.5 - client.player.getX()) < 1
+            && Math.abs(pos.getZ() + 0.5 - client.player.getZ()) < 1) throw new IllegalStateException("禁止挖掘脚下支撑方块");
+        BlockHitResult hit = visibleHit(pos);
+        if (hit == null) throw new IllegalStateException("目标方块被遮挡");
+        // Select the best compatible tool using real inventory swaps, never local stack mutation.
+        var inventory = client.player.getInventory();
+        int chosen = inventory.getSelectedSlot();
+        double speed = -1;
+        for (int slot = 0; slot < 36; slot++) {
+            var stack = inventory.getItem(slot);
+            if (stack.isBroken() || !stack.canDestroyBlock(state, client.level, pos, client.player)
+                || (state.requiresCorrectToolForDrops() && !stack.isCorrectToolForDrops(state))) continue;
+            double candidate = stack.getDestroySpeed(state);
+            if (candidate > speed) { speed = candidate; chosen = slot; }
+        }
+        if (speed < 0) throw new IllegalStateException("背包中没有能正确采集目标的工具");
+        equipAtomicSlot(chosen);
+        atomicTask = new AtomicTask("break", pos, blockId, client.level);
+        atomicTask.selectedItem = inventoryItemJson(client.player.getInventory().getSelectedSlot());
+        scheduleAtomic();
+        return atomicStatusResponse();
+    }
+
+    private void requireDimension(JsonObject body) {
+        if (!body.has("dimension") || !client.level.dimension().identifier().toString().equals(body.get("dimension").getAsString())) {
+            throw new IllegalArgumentException("维度不匹配，请重新观察后提供 dimension");
+        }
+    }
+
+    private void validateAtomicBody(JsonObject body, Set<String> allowed, Set<String> required) {
+        for (String key : body.keySet()) if (!allowed.contains(key)) throw new IllegalArgumentException("不支持的参数：" + key);
+        for (String key : required) if (!body.has(key)) throw new IllegalArgumentException("缺少参数：" + key);
+        for (String key : List.of("dimension", "expectedBlockId", "itemId", "face")) {
+            if (body.has(key) && (!body.get(key).isJsonPrimitive() || !body.getAsJsonPrimitive(key).isString()
+                || body.get(key).getAsString().length() > 128)) throw new IllegalArgumentException(key + " 必须是有效字符串");
+        }
+        if (body.has("distance") && (!body.get("distance").isJsonPrimitive() || !body.getAsJsonPrimitive("distance").isNumber())) throw new IllegalArgumentException("distance 必须是数字");
+    }
+
+    private void requireInteractionReach(BlockPos pos) {
+        if (client.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(pos)) > 4.5 * 4.5) throw new IllegalStateException("方块超出 4.5 格交互距离");
+    }
+
+    private BlockHitResult visibleHit(BlockPos pos) {
+        Vec3 eye = client.player.getEyePosition();
+        Vec3 center = Vec3.atCenterOf(pos);
+        // Test exposed faces; a center-only ray incorrectly rejects partially exposed blocks.
+        for (Direction direction : Direction.values()) {
+            Vec3 aim = center.add(direction.getStepX() * 0.499, direction.getStepY() * 0.499, direction.getStepZ() * 0.499);
+            var hit = client.level.clip(new net.minecraft.world.level.ClipContext(eye, aim,
+                net.minecraft.world.level.ClipContext.Block.OUTLINE, net.minecraft.world.level.ClipContext.Fluid.NONE, client.player));
+            if (hit.getType() == net.minecraft.world.phys.HitResult.Type.BLOCK && hit.getBlockPos().equals(pos)) return hit;
+        }
+        return null;
+    }
+
+    private int equipAtomicSlot(int slot) {
+        var inventory = client.player.getInventory();
+        if (slot >= 9) {
+            var source = client.player.inventoryMenu.findSlot(inventory, slot);
+            if (source.isEmpty()) throw new IllegalStateException("无法定位物品槽位");
+            String id = inventory.getItem(slot).getItem().builtInRegistryHolder().getRegisteredName();
+            int destination = inventory.getSelectedSlot();
+            client.gameMode.handleContainerInput(client.player.inventoryMenu.containerId, source.getAsInt(), destination, ContainerInput.SWAP, client.player);
+            if (!id.equals(inventory.getItem(destination).getItem().builtInRegistryHolder().getRegisteredName())) throw new IllegalStateException("物品交换失败");
+            slot = destination;
+        }
+        inventory.setSelectedSlot(slot);
+        client.player.connection.send(new ServerboundSetCarriedItemPacket(slot));
+        return slot;
+    }
+
+    private void scheduleAtomic() {
+        AtomicTask scheduled = atomicTask;
+        AtomicBoolean pending = new AtomicBoolean();
+        if (atomicTicker != null) atomicTicker.cancel(false);
+        atomicTicker = miningExecutor.scheduleAtFixedRate(() -> {
+            if (!pending.compareAndSet(false, true)) return;
+            client.execute(() -> {
+                try { if (atomicTask == scheduled) tickAtomic(); }
+                finally { pending.set(false); }
+            });
+        }, 50, 50, TimeUnit.MILLISECONDS);
+    }
+
+    private void tickAtomic() {
+        AtomicTask task = atomicTask;
+        if (task == null || !task.active) return;
+        try {
+            requireAtomicSafety();
+            if (client.level != task.level || client.isPaused() || client.gui.screen() != null) throw new IllegalStateException("世界已切换或游戏界面打开");
+            requireInteractionReach(task.position);
+            long elapsed = System.currentTimeMillis() - task.startedAt;
+            if (elapsed > 20_000) { finishAtomic("timeout", "方块操作超时"); return; }
+            var state = client.level.getBlockState(task.position);
+            String current = state.getBlock().builtInRegistryHolder().getRegisteredName();
+            if (task.kind.equals("break") && !current.equals(task.before)) {
+                if (!state.isAir()) throw new IllegalStateException("挖掘目标被替换，请重新扫描");
+                if (task.changedAt == 0) task.changedAt = System.currentTimeMillis();
+                if (System.currentTimeMillis() - task.changedAt >= 350) finishAtomic("completed", "客户端已读回目标方块消失");
+                return;
+            }
+            if (task.kind.equals("place")) {
+                if (task.sent && current.equals(task.expected)) {
+                    if (task.changedAt == 0) task.changedAt = System.currentTimeMillis();
+                    if (System.currentTimeMillis() - task.changedAt >= 350) finishAtomic("completed", "客户端已读回放置结果");
+                } else if (task.sent) {
+                    task.changedAt = 0;
+                    if (elapsed > 2500) finishAtomic("error", "放置后未读回预期方块");
+                }
+                else if (!task.sent && elapsed >= 350) {
+                    if (!current.equals(task.before)) throw new IllegalStateException("放置目标已变化");
+                    if (!client.player.getMainHandItem().getItem().builtInRegistryHolder().getRegisteredName().equals(task.itemId)) throw new IllegalStateException("手持物品已变化");
+                    BlockPos support = task.position.relative(task.face.getOpposite());
+                    Vec3 faceCenter = Vec3.atCenterOf(support).add(task.face.getStepX() * 0.5, task.face.getStepY() * 0.5, task.face.getStepZ() * 0.5);
+                    // End the visibility ray slightly inside the support shape. At the
+                    // exact face plane Minecraft may classify the endpoint as a miss.
+                    Vec3 rayEnd = Vec3.atCenterOf(support).add(task.face.getStepX() * 0.499, task.face.getStepY() * 0.499, task.face.getStepZ() * 0.499);
+                    var hit = client.level.clip(new net.minecraft.world.level.ClipContext(client.player.getEyePosition(), rayEnd,
+                        net.minecraft.world.level.ClipContext.Block.OUTLINE, net.minecraft.world.level.ClipContext.Fluid.NONE, client.player));
+                    if (hit.getType() != net.minecraft.world.phys.HitResult.Type.BLOCK || !hit.getBlockPos().equals(support) || hit.getDirection() != task.face) throw new IllegalStateException("放置面被遮挡");
+                    if (!client.level.getBlockState(task.position).canBeReplaced()) throw new IllegalStateException("目标不可替换");
+                    var interaction = client.gameMode.useItemOn(client.player, InteractionHand.MAIN_HAND, new BlockHitResult(faceCenter, task.face, support, false));
+                    task.sent = true;
+                    if (!interaction.consumesAction()) finishAtomic("error", "游戏拒绝放置方块");
+                }
+                return;
+            }
+            task.changedAt = 0;
+            if (elapsed < 350) return;
+            var held = client.player.getMainHandItem();
+            if (held.isBroken() || !held.canDestroyBlock(state, client.level, task.position, client.player)
+                || (state.requiresCorrectToolForDrops() && !held.isCorrectToolForDrops(state))) throw new IllegalStateException("工具已变化或损坏");
+            BlockHitResult hit = visibleHit(task.position);
+            if (hit == null) throw new IllegalStateException("挖掘目标被遮挡");
+            if (!task.sent) client.gameMode.startDestroyBlock(task.position, hit.getDirection());
+            else client.gameMode.continueDestroyBlock(task.position, hit.getDirection());
+            task.sent = true;
+            client.player.swing(InteractionHand.MAIN_HAND);
+        } catch (Throwable failure) { finishAtomic("safety_stop", failure.getMessage()); }
+    }
+
+    private void finishAtomic(String state, String message) {
+        if (atomicTask == null || !atomicTask.active) return;
+        atomicTask.active = false;
+        atomicTask.state = state;
+        atomicTask.message = message;
+        if (client.gameMode != null) client.gameMode.stopDestroyBlock();
+        if (atomicTicker != null) { atomicTicker.cancel(false); atomicTicker = null; }
+    }
+
+    private JsonObject atomicStatusResponse() {
+        JsonObject response = baseResponse();
+        response.addProperty("status", atomicTask == null ? "idle" : atomicTask.state);
+        if (atomicTask != null) response.add("action", atomicTask.toJson());
+        return response;
+    }
+
+    private Direction parseDirection(JsonObject body) {
+        String raw = body.has("face") ? body.get("face").getAsString().trim().toLowerCase(Locale.ROOT) : "up";
+        return switch (raw) {
+            case "up" -> Direction.UP;
+            case "down" -> Direction.DOWN;
+            case "north" -> Direction.NORTH;
+            case "south" -> Direction.SOUTH;
+            case "east" -> Direction.EAST;
+            case "west" -> Direction.WEST;
+            default -> throw new IllegalArgumentException("face 必须是 up、down、north、south、east 或 west");
+        };
+    }
+
+    private int selectPlaceableItem(String requestedId) {
+        var inventory = client.player.getInventory();
+        int chosen = inventory.getSelectedSlot();
+        if (requestedId != null && !requestedId.isBlank()) {
+            if (!requestedId.matches("minecraft:[a-z0-9_./-]+")) throw new IllegalArgumentException("itemId 无效");
+            chosen = -1;
+            for (int slot = 0; slot < 36; slot++) {
+                var stack = inventory.getItem(slot);
+                if (!stack.isEmpty() && requestedId.equals(stack.getItem().builtInRegistryHolder().getRegisteredName())) { chosen = slot; break; }
+            }
+            if (chosen < 0) throw new IllegalStateException("背包中没有指定的放置物品");
+        }
+        var stack = inventory.getItem(chosen);
+        if (stack.isEmpty() || !(stack.getItem() instanceof net.minecraft.world.item.BlockItem)) throw new IllegalStateException("主手没有可放置方块");
+        return equipAtomicSlot(chosen);
+    }
+
+    private JsonObject placeBlockResponse(JsonObject body) {
+        requireAtomicActionAvailable();
+        validateAtomicBody(body, Set.of("x", "y", "z", "dimension", "itemId", "face"), Set.of("x", "y", "z", "dimension", "itemId"));
+        requireDimension(body);
+        BlockPos target = requestBlockPosition(body);
+        requireInteractionReach(target);
+        if (!client.level.isLoaded(target)) throw new IllegalStateException("目标区块尚未加载");
+        Direction face = parseDirection(body);
+        BlockPos support = target.relative(face.getOpposite());
+        if (!client.level.getBlockState(target).canBeReplaced()) throw new IllegalStateException("目标位置已有不可替换方块");
+        if (client.level.getBlockState(support).isAir()) throw new IllegalStateException("放置面没有相邻支撑方块");
+        String requestedId = body.has("itemId") ? body.get("itemId").getAsString().trim().toLowerCase(Locale.ROOT) : null;
+        int slot = selectPlaceableItem(requestedId);
+        String itemId = client.player.getInventory().getItem(slot).getItem().builtInRegistryHolder().getRegisteredName();
+        var blockItem = (net.minecraft.world.item.BlockItem) client.player.getMainHandItem().getItem();
+        if (FOLLOW_HAZARDS.contains(blockItem.getBlock().builtInRegistryHolder().getRegisteredName())) throw new IllegalStateException("禁止自动放置危险方块");
+        if (client.player.getBoundingBox().intersects(new AABB(target))) throw new IllegalStateException("禁止在玩家身体内放置方块");
+        atomicTask = new AtomicTask("place", target, client.level.getBlockState(target).getBlock().builtInRegistryHolder().getRegisteredName(), client.level);
+        atomicTask.face = face;
+        atomicTask.itemId = itemId;
+        atomicTask.expected = blockItem.getBlock().builtInRegistryHolder().getRegisteredName();
+        atomicTask.selectedItem = inventoryItemJson(slot);
+        scheduleAtomic();
+        return atomicStatusResponse();
+    }
+
+    private void handleMoveStart(HttpExchange exchange) throws IOException {
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) { respond(exchange, 405, error("只支持 POST")); return; }
+        final JsonObject body;
+        try { body = JsonParser.parseString(readBody(exchange)).getAsJsonObject(); }
+        catch (Exception failure) { respond(exchange, 400, error("移动参数无效")); return; }
+        followRequest(exchange, "POST", () -> {
+            requireAtomicActionAvailable();
+            validateAtomicBody(body, Set.of("x", "y", "z", "dimension", "distance"), Set.of("x", "y", "z", "dimension"));
+            requireDimension(body);
+            String unsafe = followSafetyReason();
+            if (unsafe != null) throw new IllegalStateException(unsafe);
+            BlockPos pos = requestBlockPosition(body);
+            requireBlockDistance(pos, 32);
+            if (!client.level.isLoaded(pos)) throw new IllegalStateException("目标区块尚未加载");
+            moveTask = new MoveTask(pos, numberField(body, "distance", 0.5, 3, 1), client.level, client.player.position());
+            AtomicBoolean pending = new AtomicBoolean();
+            MoveTask scheduled = moveTask;
+            if (moveTicker != null) moveTicker.cancel(false);
+            moveTicker = miningExecutor.scheduleAtFixedRate(() -> {
+                if (!pending.compareAndSet(false, true)) return;
+                client.execute(() -> {
+                    try { if (moveTask == scheduled) tickMove(); }
+                    finally { pending.set(false); }
+                });
+            }, 100, 100, TimeUnit.MILLISECONDS);
+            return moveStatusResponse();
+        });
+    }
+
+    private void tickMove() {
+        MoveTask task = moveTask;
+        if (task == null || !task.active) return;
+        try {
+            requireAtomicSafety();
+            if (client.level != task.level || client.isPaused() || client.gui.screen() != null) throw new IllegalStateException("世界已切换或游戏界面打开");
+            String unsafe = followSafetyReason();
+            if (unsafe != null) throw new IllegalStateException(unsafe);
+            if (System.currentTimeMillis() - task.startedAt > 60_000) { finishMove("timeout", "移动超过 60 秒"); return; }
+            double x = task.position.getX() + 0.5, y = task.position.getY(), z = task.position.getZ() + 0.5;
+            boolean grounded = client.player.onGround();
+            if (grounded && FollowPathfinder.withinFollowDistance(client.player.getX(), client.player.getY(), client.player.getZ(), x, y, z, task.distance)) {
+                finishMove("completed", "已到达目标附近"); return;
+            }
+            if (task.state.equals("moving") && client.player.position().distanceToSqr(task.lastPosition) < 0.0025) task.stalledTicks++;
+            else task.stalledTicks = 0;
+            task.lastPosition = client.player.position();
+            if (task.stalledTicks >= 50) { finishMove("stuck", "持续 5 秒无法移动"); return; }
+            while (grounded && !task.waypoints.isEmpty()) {
+                var point = task.waypoints.peek();
+                if (Math.hypot(point.centerX() - client.player.getX(), point.centerZ() - client.player.getZ()) > 0.22 || Math.abs(point.y() - client.player.getY()) > 0.25) break;
+                task.waypoints.remove();
+            }
+            long now = System.currentTimeMillis();
+            if (grounded && (task.waypoints.isEmpty() || now >= task.nextRepathAt || task.stalledTicks >= 10) && now >= task.nextRepathAt) {
+                var start = new FollowPathfinder.Point(client.player.blockPosition().getX(), client.player.getY(), client.player.blockPosition().getZ());
+                var route = FollowPathfinder.find(new FollowTerrain(false), start, x, y, z, task.distance);
+                task.waypoints.clear();
+                task.waypoints.addAll(route.steps());
+                task.nextRepathAt = now + 750;
+            }
+            if (task.waypoints.isEmpty()) {
+                releaseMoveInput(); task.state = "pathfinding";
+                if (task.noPathSince == 0) task.noPathSince = now;
+                if (now - task.noPathSince >= 5000) finishMove("stuck", "没有安全可通行路线");
+                return;
+            }
+            var next = task.waypoints.peek();
+            if (grounded && !new FollowTerrain(false).canMove(client.player.getX(), client.player.getY(), client.player.getZ(), next.centerX(), next.y(), next.centerZ())) {
+                releaseMoveInput(); task.waypoints.clear(); task.nextRepathAt = 0; task.state = "pathfinding";
+                if (task.noPathSince == 0) task.noPathSince = now;
+                if (now - task.noPathSince >= 5000) finishMove("stuck", "路线持续受阻");
+                return;
+            }
+            task.noPathSince = 0;
+            double dx = next.centerX() - client.player.getX(), dz = next.centerZ() - client.player.getZ();
+            double horizontal = Math.hypot(dx, dz);
+            client.player.setYRot((float) Math.toDegrees(Math.atan2(-dx, dz)));
+            client.options.keyJump.setDown(grounded && next.y() - client.player.getY() > 0.6 && horizontal <= 1.35);
+            client.options.keyUp.setDown(horizontal > 0.12);
+            task.state = "moving";
+        } catch (Throwable failure) { finishMove("safety_stop", failure.getMessage()); }
+    }
+
+    private void releaseMoveInput() {
+        client.options.keyUp.setDown(false);
+        client.options.keyJump.setDown(false);
+    }
+
+    private void finishMove(String state, String message) {
+        if (moveTask == null || !moveTask.active) return;
+        moveTask.active = false; moveTask.state = state; moveTask.message = message;
+        releaseMoveInput();
+        if (moveTicker != null) { moveTicker.cancel(false); moveTicker = null; }
+    }
+
+    private JsonObject moveStatusResponse() {
+        JsonObject response = baseResponse();
+        response.addProperty("status", moveTask == null ? "idle" : moveTask.state);
+        if (moveTask != null) response.add("move", moveTask.toJson());
+        return response;
+    }
+
     private void handleMiningStart(HttpExchange exchange) throws IOException {
         if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
             respond(exchange, 405, error("只支持 POST"));
@@ -1068,6 +1615,7 @@ public final class MinecraftAiClient implements ClientModInitializer {
                     if (client.player == null || client.level == null || client.gameMode == null) {
                         throw new IllegalStateException("Minecraft 尚未进入可操作的世界");
                     }
+                    requireNoAtomicTask();
                     if (miningTask != null && miningTask.isActive()) {
                         throw new IllegalStateException("已有挖矿任务正在运行");
                     }
@@ -1458,6 +2006,69 @@ public final class MinecraftAiClient implements ClientModInitializer {
     }
 
     private record FollowPlan(UUID targetUuid, String targetName, double followDistance, double maxMinutes, boolean ignoreSafety) {}
+
+    private static final class AtomicTask {
+        final String id = UUID.randomUUID().toString();
+        final String kind;
+        final BlockPos position;
+        final String before;
+        final net.minecraft.client.multiplayer.ClientLevel level;
+        final long startedAt = System.currentTimeMillis();
+        boolean active = true;
+        boolean sent;
+        long changedAt;
+        String state = "running";
+        String message = "正在执行方块操作";
+        String expected;
+        String itemId;
+        JsonObject selectedItem;
+        Direction face;
+
+        AtomicTask(String kind, BlockPos position, String before, net.minecraft.client.multiplayer.ClientLevel level) {
+            this.kind = kind; this.position = position; this.before = before; this.level = level;
+        }
+
+        JsonObject toJson() {
+            JsonObject json = new JsonObject();
+            json.addProperty("id", id); json.addProperty("kind", kind); json.addProperty("active", active);
+            json.addProperty("state", state); json.addProperty("message", message);
+            json.addProperty("beforeBlockId", before); json.addProperty("expectedBlockId", expected);
+            json.addProperty("changed", state.equals("completed"));
+            json.addProperty("verification", "client_snapshot");
+            if (selectedItem != null) json.add("selectedTool", selectedItem);
+            json.addProperty("startedAt", startedAt); json.add("position", MiningTask.blockPositionJson(position));
+            return json;
+        }
+    }
+
+    private static final class MoveTask {
+        final String id = UUID.randomUUID().toString();
+        final BlockPos position;
+        final double distance;
+        final net.minecraft.client.multiplayer.ClientLevel level;
+        final long startedAt = System.currentTimeMillis();
+        final ArrayDeque<FollowPathfinder.Point> waypoints = new ArrayDeque<>();
+        Vec3 lastPosition;
+        boolean active = true;
+        String state = "pathfinding";
+        String message = "正在寻找安全路线";
+        long nextRepathAt;
+        long noPathSince;
+        int stalledTicks;
+
+        MoveTask(BlockPos position, double distance, net.minecraft.client.multiplayer.ClientLevel level, Vec3 lastPosition) {
+            this.position = position; this.distance = distance; this.level = level; this.lastPosition = lastPosition;
+        }
+
+        JsonObject toJson() {
+            JsonObject json = new JsonObject();
+            json.addProperty("id", id); json.addProperty("state", state); json.addProperty("active", active);
+            json.addProperty("message", message); json.addProperty("distance", distance);
+            json.addProperty("startedAt", startedAt); json.add("position", MiningTask.blockPositionJson(position));
+            json.addProperty("remainingWaypoints", waypoints.size());
+            return json;
+        }
+    }
 
     private static final class FollowTask {
         private final FollowPlan plan;
