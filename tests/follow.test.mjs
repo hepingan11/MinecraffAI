@@ -1,4 +1,4 @@
-import test from "node:test";
+﻿import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
@@ -6,9 +6,9 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { followCommandFromChat, executeFollowCommand, selectFollowCandidates, parseMinecraftChat, followReplyFromResult } from "../follow-skill.mjs";
-import { validateFollowPlan, getFollowStatus, getObservation } from "../minecraft-mod-api.mjs";
-import { AutoReplyService } from "../auto-reply.mjs";
+import { followCommandFromChat, executeFollowCommand, selectFollowCandidates, parseMinecraftChat, followReplyFromResult } from "../src/skills/follow-skill.mjs";
+import { validateFollowPlan, getFollowStatus, getObservation } from "../src/minecraft/minecraft-mod-api.mjs";
+import { AutoReplyService } from "../src/core/auto-reply.mjs";
 
 const alex = { uuid: "00000000-0000-0000-0000-000000000001", name: "Alex", distance: 12 };
 const steve = { uuid: "00000000-0000-0000-0000-000000000002", name: "Steve", distance: 5 };

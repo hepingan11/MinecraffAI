@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "id": "iron_pickaxe_chain",
+  "title": "从空手到铁镐：完整生存进阶链",
+  "source": {
+    "project": "minecraft-numen",
+    "gameVersion": "1.21.1",
+    "scenarioClass": "com.dwinovo.numen.scenario.IronPickaxeChain",
+    "sourceFile": "numen/common/src/bench/java/com/dwinovo/numen/scenario/IronPickaxeChain.java"
+  },
+  "targetGameVersion": "26.2",
+  "userGoal": "给我做一把铁镐",
+  "budget": {
+    "turns": 60,
+    "minutes": 20
+  },
+  "initialState": {
+    "arena": {
+      "size": 20,
+      "height": 12,
+      "floor": {"blockId": "minecraft:stone", "topY": 0, "depth": 3},
+      "boundary": {"blockId": "minecraft:barrier", "thickness": 1}
+    },
+    "player": {
+      "start": {"x": 2, "y": 1, "z": 2},
+      "owner": {"x": 1, "y": 1, "z": 1}
+    },
+    "inventory": [],
+    "world": {
+      "fills": [
+        {"from": {"x": 10, "y": 1, "z": 9}, "to": {"x": 13, "y": 2, "z": 11}, "blockId": "minecraft:stone"},
+        {"from": {"x": 13, "y": 1, "z": 4}, "to": {"x": 14, "y": 1, "z": 5}, "blockId": "minecraft:iron_ore"},
+        {"from": {"x": 7, "y": 1, "z": 13}, "to": {"x": 8, "y": 1, "z": 13}, "blockId": "minecraft:coal_ore"}
+      ],
+      "blocks": [
+        {"pos": {"x": 5, "y": 1, "z": 4}, "blockId": "minecraft:oak_log"},
+        {"pos": {"x": 5, "y": 2, "z": 4}, "blockId": "minecraft:oak_log"},
+        {"pos": {"x": 5, "y": 3, "z": 4}, "blockId": "minecraft:oak_log"},
+        {"pos": {"x": 5, "y": 4, "z": 4}, "blockId": "minecraft:oak_log"},
+        {"pos": {"x": 8, "y": 1, "z": 3}, "blockId": "minecraft:oak_log"},
+        {"pos": {"x": 8, "y": 2, "z": 3}, "blockId": "minecraft:oak_log"},
+        {"pos": {"x": 8, "y": 3, "z": 3}, "blockId": "minecraft:oak_log"},
+        {"pos": {"x": 8, "y": 4, "z": 3}, "blockId": "minecraft:oak_log"},
+        {"pos": {"x": 4, "y": 1, "z": 8}, "blockId": "minecraft:oak_log"},
+        {"pos": {"x": 4, "y": 2, "z": 8}, "blockId": "minecraft:oak_log"},
+        {"pos": {"x": 4, "y": 3, "z": 8}, "blockId": "minecraft:oak_log"},
+        {"pos": {"x": 4, "y": 4, "z": 8}, "blockId": "minecraft:oak_log"}
+      ],
+      "stations": [
+        {"stationId": "furnace_target", "pos": {"x": 7, "y": 1, "z": 7}},
+        {"stationId": "furnace_stand", "pos": {"x": 7, "y": 1, "z": 6}}
+      ]
+    }
+  },
+  "goals": {
+    "success": [
+      {"type": "inventory_item_minimum", "itemId": "minecraft:iron_pickaxe", "minimum": 1}
+    ],
+    "subgoals": [
+      {"id": "crafting_table", "type": "item_or_placed_block", "itemId": "minecraft:crafting_table"},
+      {"id": "wooden_pickaxe", "type": "inventory_item_any", "itemIds": ["minecraft:wooden_pickaxe", "minecraft:stone_pickaxe", "minecraft:iron_pickaxe"]},
+      {"id": "stone_pickaxe", "type": "inventory_item_any", "itemIds": ["minecraft:stone_pickaxe", "minecraft:iron_pickaxe"]},
+      {"id": "furnace", "type": "item_or_placed_block", "itemId": "minecraft:furnace"},
+      {"id": "iron_ingot", "type": "inventory_item_minimum", "itemId": "minecraft:iron_ingot", "minimum": 3},
+      {"id": "iron_pickaxe", "type": "inventory_item_minimum", "itemId": "minecraft:iron_pickaxe", "minimum": 1}
+    ]
+  },
+  "referencePlan": [
+    {"phase": "gather_wood", "actionKinds": ["observe", "scan_blocks", "move_to", "break_block", "collect_drops"]},
+    {"phase": "craft_wooden_tools", "actionKinds": ["recipes", "craft"], "outputs": ["minecraft:oak_planks", "minecraft:crafting_table", "minecraft:stick", "minecraft:wooden_pickaxe"]},
+    {"phase": "gather_stone", "actionKinds": ["scan_blocks", "move_to", "break_block", "collect_drops"]},
+    {"phase": "craft_stone_pickaxe", "actionKinds": ["recipes", "craft"], "outputs": ["minecraft:stone_pickaxe"]},
+    {"phase": "gather_coal_and_iron", "actionKinds": ["scan_blocks", "move_to", "break_block", "collect_drops"]},
+    {"phase": "smelt_iron", "actionKinds": ["craft", "place_block", "smelt"], "minimumRawIron": 3},
+    {"phase": "craft_iron_pickaxe", "actionKinds": ["recipes", "craft"], "outputs": ["minecraft:iron_pickaxe"]}
+  ],
+  "requiredCapabilities": ["progression", "crafting_chain", "tool_selection", "smelting", "station_placement", "inventory_verification"],
+  "failureCases": ["missing_material", "wrong_tool", "recipe_locked", "station_unavailable", "no_path", "inventory_full", "no_progress"],
+  "migration": {
+    "kind": "converted_benchmark",
+    "standardProcedure": "采木；合成木板、工作台、木棍、木镐；采圆石并合成石镐；采煤和铁；制作并放置熔炉；熔炼至少3个铁锭；回到工作台制作铁镐。",
+    "productionUse": "用于验证 ReAct 是否能根据真实配方结果逐步补齐前置条件。熔炼能力尚需当前项目提供后端工具。"
+  }
+}

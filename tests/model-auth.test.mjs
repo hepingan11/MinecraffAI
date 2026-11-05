@@ -1,7 +1,7 @@
-import test from "node:test";
+﻿import test from "node:test";
 import assert from "node:assert/strict";
-import { AutoReplyService, DEFAULT_CONFIG } from "../auto-reply.mjs";
-import { ToolRegistry } from "../tool-registry.mjs";
+import { AutoReplyService, DEFAULT_CONFIG } from "../src/core/auto-reply.mjs";
+import { ToolRegistry } from "../src/core/tool-registry.mjs";
 
 test("模型鉴权失败提供明确提示，停止对话且不执行工具；修正后可以再次触发", async () => {
   const previousFetch = globalThis.fetch;

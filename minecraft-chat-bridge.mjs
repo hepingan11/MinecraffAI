@@ -1,9 +1,9 @@
-import { readFile } from "node:fs/promises";
+﻿import { readFile } from "node:fs/promises";
 import process from "node:process";
 import { TextDecoder } from "node:util";
-import { discoverWindows, getEnvironment, getInventory, getMiningStatus, getObservation, getNearbyPlayers, getFollowStatus, publicWindow, sendChat, startMining, stopMining, validateMessage, validateMiningPlan } from "./minecraft-mod-api.mjs";
-import { executeFollowCommand } from "./follow-skill.mjs";
-import { executeTeleportCommand, validateTeleportPlan } from "./teleport-skill.mjs";
+import { discoverWindows, getEnvironment, getInventory, getMiningStatus, getObservation, getNearbyPlayers, getFollowStatus, publicWindow, sendChat, startMining, stopMining, validateMessage, validateMiningPlan } from "./src/minecraft/minecraft-mod-api.mjs";
+import { executeFollowCommand } from "./src/skills/follow-skill.mjs";
+import { executeTeleportCommand, validateTeleportPlan } from "./src/skills/teleport-skill.mjs";
 
 const DEFAULT_LOG_PATH = String.raw`G:\Game\[PCL启动器打包]RO26.2性能优化+生电轻量版 1.0.1\.minecraft\versions\[PCL启动器打包]RO26.2性能优化+生电轻量版\logs\latest.log`;
 const decoder = new TextDecoder("gb18030");

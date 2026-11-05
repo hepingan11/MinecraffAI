@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "id": "mine_iron_hidden_cluster",
+  "title": "隐藏铁矿簇：扫描、开路、挖掘、收集",
+  "source": {
+    "project": "minecraft-numen",
+    "gameVersion": "1.21.1",
+    "scenarioClass": "com.dwinovo.numen.scenario.MineIron",
+    "sourceFile": "numen/common/src/bench/java/com/dwinovo/numen/scenario/MineIron.java"
+  },
+  "targetGameVersion": "26.2",
+  "userGoal": "帮我挖10个铁回来",
+  "budget": {
+    "turns": 30,
+    "minutes": 10
+  },
+  "initialState": {
+    "arena": {
+      "size": 20,
+      "height": 12,
+      "floor": {"blockId": "minecraft:stone", "topY": 0, "depth": 3},
+      "boundary": {"blockId": "minecraft:barrier", "thickness": 1}
+    },
+    "player": {
+      "start": {"x": 5, "y": 1, "z": 5},
+      "owner": {"x": 1, "y": 1, "z": 1}
+    },
+    "inventory": [
+      {"itemId": "minecraft:stone_pickaxe", "count": 1}
+    ],
+    "world": {
+      "fills": [
+        {"from": {"x": 7, "y": 1, "z": 7}, "to": {"x": 13, "y": 4, "z": 13}, "blockId": "minecraft:stone"}
+      ],
+      "blocks": [
+        {"pos": {"x": 9, "y": 1, "z": 9}, "blockId": "minecraft:iron_ore"},
+        {"pos": {"x": 9, "y": 1, "z": 10}, "blockId": "minecraft:iron_ore"},
+        {"pos": {"x": 9, "y": 1, "z": 11}, "blockId": "minecraft:iron_ore"},
+        {"pos": {"x": 10, "y": 1, "z": 9}, "blockId": "minecraft:iron_ore"},
+        {"pos": {"x": 10, "y": 1, "z": 10}, "blockId": "minecraft:iron_ore"},
+        {"pos": {"x": 10, "y": 1, "z": 11}, "blockId": "minecraft:iron_ore"},
+        {"pos": {"x": 11, "y": 1, "z": 9}, "blockId": "minecraft:iron_ore"},
+        {"pos": {"x": 11, "y": 1, "z": 10}, "blockId": "minecraft:iron_ore"},
+        {"pos": {"x": 11, "y": 1, "z": 11}, "blockId": "minecraft:iron_ore"},
+        {"pos": {"x": 9, "y": 2, "z": 9}, "blockId": "minecraft:iron_ore"},
+        {"pos": {"x": 9, "y": 2, "z": 10}, "blockId": "minecraft:iron_ore"},
+        {"pos": {"x": 9, "y": 2, "z": 11}, "blockId": "minecraft:iron_ore"}
+      ]
+    }
+  },
+  "goals": {
+    "success": [
+      {"type": "inventory_item_minimum", "itemId": "minecraft:raw_iron", "minimum": 10}
+    ],
+    "subgoals": [
+      {"id": "first_ore", "type": "inventory_item_minimum", "itemId": "minecraft:raw_iron", "minimum": 1},
+      {"id": "half_target", "type": "inventory_item_minimum", "itemId": "minecraft:raw_iron", "minimum": 5}
+    ]
+  },
+  "referencePlan": [
+    {"phase": "observe", "actionKinds": ["observe", "inventory"]},
+    {"phase": "search", "actionKinds": ["scan_blocks"], "targetBlocks": ["minecraft:iron_ore"], "scanRadius": 12},
+    {"phase": "reach_or_clear", "actionKinds": ["move_to", "break_block"], "repeat": true},
+    {"phase": "rescan", "actionKinds": ["scan_blocks"], "repeat": true},
+    {"phase": "collect_and_verify", "actionKinds": ["collect_drops", "inventory"]},
+    {"phase": "repeat_until", "condition": "minecraft:raw_iron >= 10"}
+  ],
+  "requiredCapabilities": ["ore_search", "safe_navigation", "blocked_target", "drop_collection", "inventory_verification"],
+  "failureCases": ["wrong_tool", "out_of_reach", "no_path", "blocked", "inventory_full", "safety_stop", "no_progress"],
+  "migration": {
+    "kind": "converted_benchmark",
+    "standardProcedure": "扫描铁矿；对不可达目标寻找站位或开路；每轮挖掘后收集掉落并重新扫描；背包达到10个粗铁后结束。",
+    "productionUse": "用于评测和生成少量示例轨迹，不能作为固定答案注入模型。"
+  }
+}

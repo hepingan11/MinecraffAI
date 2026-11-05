@@ -19,6 +19,53 @@ F:\Project\MinecraffAI\minecraft-dashboard.cmd
 
 然后打开 <http://127.0.0.1:3210>。控制台会读取游戏日志中的聊天信息，并通过 Mod API 发送聊天消息。
 
+## 本地开发调试
+
+在项目目录执行下面的命令即可启动后端：
+
+```powershell
+npm start
+```
+
+开发期间使用 Node 的文件监听模式，修改后端文件会自动重启：
+
+```powershell
+npm run dev
+```
+
+如果蓝图放在 Minecraft 的 `.minecraft\schematics`，可以在启动前指定目录，不需要复制到项目中：
+
+```powershell
+$env:MC_AI_BLUEPRINT_DIR = 'G:\Game\你的实例\.minecraft\schematics'
+npm run dev
+```
+
+验证服务是否启动：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:3210/health
+Invoke-RestMethod http://127.0.0.1:3210/api/status
+```
+
+如果提示端口 `3210` 已被占用，先停止已运行的 dashboard 进程，再启动 `npm run dev`。
+
+## 目录结构
+
+```text
+src/
+  core/           自动回复、任务状态、事件队列和工具执行器
+  minecraft/      Mod API、Minecraft 数据 schema 和事件适配
+  skills/         挖矿、跟随、合成、蓝图等后端技能
+  integrations/   外部语音服务适配
+  bench/          Numen Bench 数据加载器
+tests/            Node、Python 和 Java 回归测试
+web/              控制台页面
+minecraft-ai-mod/ Fabric 客户端 Mod 工程
+minecraft-numen/  独立的 Numen Gradle 工程
+```
+
+根目录只保留 Node 启动入口、项目配置和说明文档；Mod 安装脚本位于 `scripts/install-mod.ps1`。
+
 ## 多窗口
 
 每个 Minecraft 客户端进程都会在自己的游戏目录写入：
@@ -125,6 +172,26 @@ Agent 技能协议见 [skill.md](skill.md)。当前技能包括：`minecraft_inv
 工具登记和执行已经迁移为后端控制的 Numen 风格边界：模型只能看到工具名称、说明和参数 schema，真正的处理器只保留在 Node 后端。`ToolRegistry` 会拒绝重复或非法工具名，并在调用处理器前重新校验 JSON 参数；工具名允许一次大小写修复，未知工具会返回结构化失败。
 
 `ToolExecutor` 对每个模型回复中的调用按顺序执行，逐个发出 `agent.tool_started` 和 `agent.tool_result` 事件，再把结果写回 ReAct 对话。执行批次有数量和单调用时限；聊天、断线和其他紧急事件可以中断当前调用，当前和排队调用都会以失败结果结算，模型不会收到未配对的工具消息。工具清单和执行器诊断可通过 `GET /api/tools` 查看。
+
+## Minecraft 命令流模式
+
+自动回复设置中的“Agent 执行模式”可以选择“工具调用”或“命令流”。命令流模式不会把工具 schema 发送给模型，而是要求模型返回受限 JSON：
+
+```json
+{
+  "commands": [
+    { "op": "observe", "args": {} },
+    { "op": "scan_blocks", "args": { "radius": 16, "maxResults": 32 } }
+  ],
+  "reply": ""
+}
+```
+
+命令流还支持后端限制的控制命令和状态引用：`set` 保存变量，`if` 执行条件分支，`repeat_until` 和 `repeat_while` 执行有最大次数和总步数上限的循环；参数可以引用 `$vars.target`、`$last.result.position.x` 或 `$results[0].result.state`。条件只支持 `equals`、`notEquals`、`gt`、`gte`、`lt`、`lte`、`contains`、`in`、`truthy`、`falsy` 以及 `and`、`or`、`not` 组合。
+
+Node 后端会逐条解析命令，映射到现有技能执行器，并重新执行参数、窗口、维度、目标方块、数量、超时和取消校验。命令结果会回传给模型，模型再决定下一批命令；任务完成时返回 `commands: []` 和最终 `reply`。命令流只允许后端白名单中的 Minecraft 操作，不执行 Shell、JavaScript、Python 或任意文件系统命令。
+
+命令流模式适合让模型动态规划多个动作，减少为每个高层需求单独编写工具 schema 的需要。移动、寻路、连续挖掘等高频逻辑仍由后端和 Mod 执行，模型只在动作完成、失败或状态变化后重新规划。
 
 ## 自动合成
 

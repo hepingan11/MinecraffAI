@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "id": "dig_deep_diamond",
+  "title": "深层钻石：向下开路并带回掉落物",
+  "source": {
+    "project": "minecraft-numen",
+    "gameVersion": "1.21.1",
+    "scenarioClass": "com.dwinovo.numen.scenario.DeepDiamond",
+    "sourceFile": "numen/common/src/bench/java/com/dwinovo/numen/scenario/DeepDiamond.java"
+  },
+  "targetGameVersion": "26.2",
+  "userGoal": "我们脚底下深处埋着钻石，去挖上来",
+  "budget": {
+    "turns": 30,
+    "minutes": 10
+  },
+  "initialState": {
+    "arena": {
+      "size": 20,
+      "height": 18,
+      "floor": {"blockId": "minecraft:stone", "topY": 0, "depth": 3},
+      "boundary": {"blockId": "minecraft:barrier", "thickness": 1}
+    },
+    "player": {
+      "start": {"x": 10, "y": 15, "z": 10},
+      "owner": {"x": 2, "y": 15, "z": 2}
+    },
+    "inventory": [
+      {"itemId": "minecraft:iron_pickaxe", "count": 1}
+    ],
+    "world": {
+      "fills": [
+        {"from": {"x": 0, "y": 1, "z": 0}, "to": {"x": 19, "y": 14, "z": 19}, "blockId": "minecraft:stone"}
+      ],
+      "blocks": [
+        {"pos": {"x": 10, "y": 3, "z": 10}, "blockId": "minecraft:diamond_ore"}
+      ]
+    }
+  },
+  "goals": {
+    "success": [
+      {"type": "item_delivered_or_handed_over", "itemId": "minecraft:diamond", "minimum": 1}
+    ],
+    "subgoals": [
+      {"id": "open_halfway", "type": "vertical_path_progress", "targetY": 3, "minimumOpenedLayers": 5},
+      {"id": "ore_mined", "type": "block_removed", "pos": {"x": 10, "y": 3, "z": 10}, "blockId": "minecraft:diamond_ore"}
+    ]
+  },
+  "referencePlan": [
+    {"phase": "observe", "actionKinds": ["observe", "inventory"]},
+    {"phase": "find_reachable_standpoint", "actionKinds": ["scan_blocks", "move_to"], "target": {"x": 10, "y": 3, "z": 10}},
+    {"phase": "open_vertical_route", "actionKinds": ["break_block", "place_block"], "safetyChecks": ["avoid_fall", "avoid_lava", "keep_escape_route"]},
+    {"phase": "mine_and_collect", "actionKinds": ["break_block", "collect_drops", "inventory"]},
+    {"phase": "return_or_deliver", "actionKinds": ["move_to", "deliver_item"]}
+  ],
+  "requiredCapabilities": ["deep_digging", "vertical_navigation", "fall_safety", "drop_collection", "item_delivery"],
+  "failureCases": ["wrong_tool", "out_of_reach", "no_path", "unsafe_drop", "lava_risk", "drop_not_collected", "no_progress"],
+  "migration": {
+    "kind": "converted_benchmark",
+    "standardProcedure": "确认铁镐；分段向钻石上方开路，保持可返回路线；重新确认可达后挖掘；等待并收集钻石，再带回主人或确认进入背包。",
+    "productionUse": "用于评测深层导航和安全判断；交付动作需要当前项目未来的物品交付工具。"
+  }
+}

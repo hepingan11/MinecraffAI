@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "minecraft-numen-bench",
+  "sourceProject": "minecraft-numen",
+  "sourceGameVersion": "1.21.1",
+  "targetGameVersion": "26.2",
+  "encoding": "UTF-8",
+  "purpose": "将 Numen 的确定性场景转换为当前项目的规划、工具调用和后端执行评测数据",
+  "scenarios": [
+    {
+      "id": "mine_iron_hidden_cluster",
+      "file": "mine_iron_hidden_cluster.json",
+      "capabilities": ["ore_search", "safe_navigation", "blocked_target", "drop_collection"]
+    },
+    {
+      "id": "dig_deep_diamond",
+      "file": "dig_deep_diamond.json",
+      "capabilities": ["deep_digging", "vertical_navigation", "drop_collection"]
+    },
+    {
+      "id": "iron_pickaxe_chain",
+      "file": "iron_pickaxe_chain.json",
+      "capabilities": ["progression", "crafting_chain", "smelting", "tool_upgrade"]
+    },
+    {
+      "id": "craft_stone_pickaxe",
+      "file": "craft_stone_pickaxe.json",
+      "capabilities": ["crafting", "material_collection", "tool_upgrade"]
+    },
+    {
+      "id": "chest_in_wall",
+      "file": "chest_in_wall.json",
+      "capabilities": ["blocked_container", "navigation", "container_interaction"]
+    },
+    {
+      "id": "build_wall_between_posts",
+      "file": "build_wall_between_posts.json",
+      "capabilities": ["block_placement", "geometric_goal", "preserve_existing_blocks"]
+    }
+  ],
+  "migrationPolicy": {
+    "standardProceduresAreReferences": true,
+    "doNotInjectProceduresAsFixedAnswers": true,
+    "validateImportantLogicOnBackend": true,
+    "versionSensitiveFactsRequireRevalidation": true
+  }
+}

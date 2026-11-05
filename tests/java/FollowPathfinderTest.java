@@ -36,7 +36,9 @@ public final class FollowPathfinderTest {
         var route = FollowPathfinder.find(grid, start, targetX, targetY, targetZ, 0.1);
         var previous = start;
         for (var next : route.steps()) {
-            check(Math.abs(next.x() - previous.x()) + Math.abs(next.z() - previous.z()) == 1, "route cuts a corner");
+            int dx = Math.abs(next.x() - previous.x());
+            int dz = Math.abs(next.z() - previous.z());
+            check(dx <= 1 && dz <= 1 && dx + dz > 0, "route contains an invalid step");
             check(FollowPathfinder.allowedHeightChange(previous.y(), next.y()), "route violates rise/fall limits");
             check(!grid.dangerous.contains(next.x() + ":" + next.z()), "route crosses a dangerous cell");
             previous = next;
@@ -51,6 +53,11 @@ public final class FollowPathfinderTest {
 
     public static void main(String[] args) {
         scenario("flat floor", () -> check(route(new Grid((x, z) -> 0), 6.5, 0, 0.5).reachesTarget(), "flat route missing"));
+        scenario("diagonal floor uses diagonal steps", () -> {
+            var path = route(new Grid((x, z) -> 0), 6.5, 0, 6.5);
+            check(path.reachesTarget(), "diagonal route missing");
+            check(path.steps().stream().anyMatch(point -> point.x() == point.z()), "diagonal step not selected");
+        });
         scenario("one-block ledge is climbed", () -> {
             var path = route(new Grid((x, z) -> x >= 1 ? 1 : 0), 4.5, 1, 0.5);
             check(path.reachesTarget() && path.steps().getFirst().y() == 1, "one-block jump not selected");

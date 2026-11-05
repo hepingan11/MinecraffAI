@@ -3,9 +3,12 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "start": "node minecraft-dashboard.mjs",
+    "dev": "node --watch minecraft-dashboard.mjs",
     "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
+    "prismarine-nbt": "^2.8.0",
     "ws": "^8.22.0"
   }
 }

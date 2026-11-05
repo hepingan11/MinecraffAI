@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "id": "build_wall_between_posts",
+  "title": "两根柱子之间建造圆石墙",
+  "source": {
+    "project": "minecraft-numen",
+    "gameVersion": "1.21.1",
+    "scenarioClass": "com.dwinovo.numen.scenario.BuildWall",
+    "sourceFile": "numen/common/src/bench/java/com/dwinovo/numen/scenario/BuildWall.java"
+  },
+  "targetGameVersion": "26.2",
+  "userGoal": "在两根柱子之间建一面圆石墙",
+  "budget": {
+    "turns": 30,
+    "minutes": 10
+  },
+  "initialState": {
+    "arena": {
+      "size": 20,
+      "height": 12,
+      "floor": {"blockId": "minecraft:stone", "topY": 0, "depth": 3},
+      "boundary": {"blockId": "minecraft:barrier", "thickness": 1}
+    },
+    "player": {
+      "start": {"x": 2, "y": 1, "z": 2},
+      "owner": {"x": 1, "y": 1, "z": 1}
+    },
+    "inventory": [
+      {"itemId": "minecraft:cobblestone", "count": 12}
+    ],
+    "world": {
+      "fills": [],
+      "blocks": [
+        {"pos": {"x": 6, "y": 1, "z": 8}, "blockId": "minecraft:oak_fence"},
+        {"pos": {"x": 6, "y": 2, "z": 8}, "blockId": "minecraft:oak_fence"},
+        {"pos": {"x": 6, "y": 3, "z": 8}, "blockId": "minecraft:oak_fence"},
+        {"pos": {"x": 11, "y": 1, "z": 8}, "blockId": "minecraft:oak_fence"},
+        {"pos": {"x": 11, "y": 2, "z": 8}, "blockId": "minecraft:oak_fence"},
+        {"pos": {"x": 11, "y": 3, "z": 8}, "blockId": "minecraft:oak_fence"}
+      ]
+    }
+  },
+  "goals": {
+    "success": [
+      {"type": "block_f1_score_minimum", "blockId": "minecraft:cobblestone", "minimum": 0.9, "target": {"from": {"x": 7, "y": 1, "z": 8}, "to": {"x": 10, "y": 3, "z": 8}}}
+    ],
+    "subgoals": [
+      {"id": "place_first_block", "type": "placed_block_minimum", "blockId": "minecraft:cobblestone", "minimum": 1},
+      {"id": "complete_wall", "type": "target_cells_filled", "blockId": "minecraft:cobblestone", "target": {"from": {"x": 7, "y": 1, "z": 8}, "to": {"x": 10, "y": 3, "z": 8}}, "minimum": 12}
+    ],
+    "guards": [
+      {"id": "preserve_left_post", "type": "block_region_unchanged", "target": {"from": {"x": 6, "y": 1, "z": 8}, "to": {"x": 6, "y": 3, "z": 8}}, "blockId": "minecraft:oak_fence"},
+      {"id": "preserve_right_post", "type": "block_region_unchanged", "target": {"from": {"x": 11, "y": 1, "z": 8}, "to": {"x": 11, "y": 3, "z": 8}}, "blockId": "minecraft:oak_fence"}
+    ]
+  },
+  "referencePlan": [
+    {"phase": "observe_and_inventory", "actionKinds": ["observe", "inventory"]},
+    {"phase": "move_to_building_side", "actionKinds": ["move_to"], "target": {"x": 8, "y": 1, "z": 6}},
+    {"phase": "place_target_cells", "actionKinds": ["place_block"], "blockId": "minecraft:cobblestone", "target": {"from": {"x": 7, "y": 1, "z": 8}, "to": {"x": 10, "y": 3, "z": 8}}, "preserve": ["minecraft:oak_fence"]},
+    {"phase": "verify_geometry", "actionKinds": ["observe", "inventory"]}
+  ],
+  "requiredCapabilities": ["block_placement", "geometric_goal", "preserve_existing_blocks", "inventory_verification"],
+  "failureCases": ["no_path", "wrong_block", "placement_refused", "inventory_shortage", "target_occupied", "no_progress"],
+  "migration": {
+    "kind": "converted_benchmark",
+    "standardProcedure": "确认12个圆石；移动到两根栅栏柱之间的安全站位；只填充x=7..10、y=1..3、z=8的12个目标格；最后检查F1和两根柱子完整。",
+    "productionUse": "可直接用于当前项目的方块放置工具评测，几何成功条件必须由后端计算。"
+  }
+}

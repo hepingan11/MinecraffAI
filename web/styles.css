@@ -42,7 +42,9 @@ button { border: 0; cursor: pointer; color: inherit; }
 .form-grid textarea { resize: vertical; line-height: 1.5; }
 .form-grid input:focus, .form-grid select:focus, .form-grid textarea:focus { border-color: rgba(138,240,188,.55); }
 .settings-actions { display: flex; align-items: center; gap: 12px; margin-top: 17px; }
-.settings-actions #automationSaveStatus { color: #7f9294; font: 10px "DM Mono", monospace; }
+.settings-actions #automationSaveStatus, .settings-actions #aiCheckStatus { color: #7f9294; font: 10px "DM Mono", monospace; }
+.settings-actions #aiCheckStatus.status-success { color: #71d39b; }
+.settings-actions #aiCheckStatus.status-error { color: #f28c8c; }
 .danger-mode { border-color: rgba(243,179,121,.7); color: var(--orange); background: rgba(243,179,121,.1); }
 .automation-monitor { border-top: 1px solid var(--border); padding: 13px 21px 16px; color: #7f9294; font: 10px "DM Mono", monospace; }
 @media (max-width: 720px) { .form-grid { grid-template-columns: 1fr; }.form-grid label.wide { grid-column: auto; } }
@@ -64,3 +66,31 @@ button { border: 0; cursor: pointer; color: inherit; }
 .knowledge-entry-actions { display: flex; flex: 0 0 auto; gap: 8px; align-items: flex-start; }
 .knowledge-entry-actions button { background: transparent; color: #8da6a0; font-size: 10px; padding: 4px; }
 .knowledge-entry-actions button:hover { color: var(--green); }
+
+/* Keep the active dashboard compact and make every visible action discoverable. */
+:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.main-content { overflow: hidden; }
+.page-body { width: min(1320px, calc(100% - 64px)); }
+.welcome-row { gap: 24px; }
+.connection-controls { flex: 0 1 300px; }
+.hero-card { padding-inline: clamp(28px, 4vw, 52px); }
+.metric-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.quick-panel { min-height: 0; }
+.quick-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.quick-action { min-width: 0; min-height: 82px; }
+.quick-action small { white-space: normal; line-height: 1.35; }
+
+@media (max-width: 1100px) {
+  .page-body { width: calc(100% - 48px); }
+  .content-grid { grid-template-columns: 1fr; }
+  .right-column { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 760px) {
+  .page-body { width: calc(100% - 28px); }
+  .welcome-row { gap: 16px; }
+  .connection-controls { width: 100%; }
+  .hero-card { padding: 30px 24px; }
+  .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .right-column { grid-template-columns: 1fr; }
+}

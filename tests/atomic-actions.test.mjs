@@ -1,4 +1,4 @@
-import test from "node:test";
+﻿import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
@@ -6,14 +6,14 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { registerAtomicTools } from "../minecraft-atomic-tools.mjs";
-import { scanBlocks, getInventory, breakBlock } from "../minecraft-mod-api.mjs";
-import { ToolRegistry } from "../tool-registry.mjs";
-import { ToolExecutor } from "../tool-executor.mjs";
-import { TaskStateStore } from "../task-state.mjs";
-import { EventQueue } from "../event-queue.mjs";
-import { MinecraftEventSource } from "../minecraft-event-source.mjs";
-import { AutoReplyService, DEFAULT_CONFIG } from "../auto-reply.mjs";
+import { registerAtomicTools } from "../src/skills/minecraft-atomic-tools.mjs";
+import { scanBlocks, getInventory, breakBlock } from "../src/minecraft/minecraft-mod-api.mjs";
+import { ToolRegistry } from "../src/core/tool-registry.mjs";
+import { ToolExecutor } from "../src/core/tool-executor.mjs";
+import { TaskStateStore } from "../src/core/task-state.mjs";
+import { EventQueue } from "../src/core/event-queue.mjs";
+import { MinecraftEventSource } from "../src/minecraft/minecraft-event-source.mjs";
+import { AutoReplyService, DEFAULT_CONFIG } from "../src/core/auto-reply.mjs";
 
 const dimension = "minecraft:overworld";
 const target = { x: 10, y: 64, z: 10, dimension };
@@ -64,7 +64,7 @@ test("atomic backend rejects invalid direct arguments and model arguments before
   const { window, requests } = await fakeMod(t);
   const registry = registerAtomicTools(new ToolRegistry());
   for (const [name, args] of [
-    ["minecraft_scan_blocks", { radius: 17 }],
+    ["minecraft_scan_blocks", { radius: 65 }],
     ["minecraft_scan_blocks", { radius: "8" }],
     ["minecraft_scan_blocks", { x: 1 }],
     ["minecraft_break_block", { ...target }],

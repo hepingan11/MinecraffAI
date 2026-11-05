@@ -24,7 +24,6 @@
       </nav>
       <div class="nav-label">管理</div>
       <nav class="nav-list">
-        <button class="nav-item" data-section="logs"><span class="nav-icon">▤</span>运行日志</button>
         <button class="nav-item" data-section="settings"><span class="nav-icon">⚙</span>设置</button>
         <button class="nav-item" data-section="knowledge"><span class="nav-icon">▤</span>知识库</button>
         <button class="nav-item" data-section="experiences"><span class="nav-icon">✦</span>经验学习</button>
@@ -40,8 +39,7 @@
       <header class="topbar">
         <div class="breadcrumb"><span>工作区</span><i>/</i><strong>控制中心</strong></div>
         <div class="top-actions">
-          <button class="icon-button" id="refreshButton" title="刷新数据">↻</button>
-          <button class="icon-button" title="通知">♢<em></em></button>
+          <button class="icon-button" id="refreshButton" title="刷新数据" aria-label="刷新数据">↻</button>
           <button class="outline-button" id="openChatButton"><span>＋</span> 快速发消息</button>
         </div>
       </header>
@@ -75,7 +73,7 @@
           </article>
 
           <div class="right-column">
-            <article class="panel quick-panel"><div class="panel-header"><div><p class="panel-kicker">SHORTCUTS</p><h3>快捷操作</h3></div><button class="kebab">•••</button></div><div class="quick-grid"><button class="quick-action" data-action="chat"><span class="quick-icon green">◌</span><b>发送消息</b><small>与游戏内玩家交流</small></button><button class="quick-action" data-action="refresh"><span class="quick-icon purple">↻</span><b>同步日志</b><small>读取最新聊天记录</small></button><button class="quick-action disabled" data-action="automation"><span class="quick-icon orange">◈</span><b>新建自动化</b><small>即将开放</small><span class="soon">SOON</span></button><button class="quick-action disabled" data-action="world"><span class="quick-icon blue">⌁</span><b>查看世界</b><small>即将开放</small><span class="soon">SOON</span></button></div></article>
+          <article class="panel quick-panel"><div class="panel-header"><div><p class="panel-kicker">SHORTCUTS</p><h3>快捷操作</h3></div></div><div class="quick-grid"><button class="quick-action" data-action="chat"><span class="quick-icon green">◌</span><b>发送消息</b><small>与游戏内玩家交流</small></button><button class="quick-action" data-action="refresh"><span class="quick-icon purple">↻</span><b>同步日志</b><small>读取最新聊天记录</small></button></div></article>
             <article class="panel activity-panel"><div class="panel-header"><div><p class="panel-kicker">SYSTEM</p><h3>最近活动</h3></div></div><div class="activity-list"><div class="activity-item"><span class="activity-line green"></span><div><b>控制台已启动</b><p>本地服务等待连接</p></div><time>刚刚</time></div><div class="activity-item"><span class="activity-line purple"></span><div><b>客户端 Mod API 就绪</b><p>支持程序级聊天控制</p></div><time>刚刚</time></div><div class="activity-item muted"><span class="activity-line"></span><div><b>更多能力即将到来</b><p>自动化、世界状态、任务</p></div><time>—</time></div></div></article>
           </div>
         </section>
@@ -84,11 +82,14 @@
           <div class="panel-header"><div><p class="panel-kicker">AUTOMATION</p><h3>AI 自动回复</h3></div><span class="automation-state" id="automationState">未启用</span></div>
           <form class="settings-form" id="automationForm">
             <label class="switch-row"><span><b>启用自动回复</b><small>实时监听游戏聊天中的触发词</small></span><input id="automationEnabled" type="checkbox" /></label>
+            <label class="switch-row"><span><b>记录经验学习</b><small>关闭后不再保存新的对话经验，已有经验仍可继续参考</small></span><input id="experienceLearningEnabled" type="checkbox" /></label>
             <label class="switch-row"><span><b>同步语音回答</b><small>文字发送后，通过 Plasmo Voice 在游戏内播放 AI 语音</small></span><input id="voiceReplyEnabled" type="checkbox" /></label>
             <div class="form-grid">
               <label><span>触发名称（不含 @）</span><input id="triggerName" maxlength="80" placeholder="MinecraftAI" required /></label>
               <label><span>目标 Minecraft 窗口</span><select id="automationWindowId"><option value="">单窗口时自动选择</option></select></label>
               <label><span>Base URL</span><input id="aiBaseUrl" maxlength="500" placeholder="https://api.openai.com/v1" required /></label>
+              <label><span>LLM 接口格式</span><select id="aiApiFormat"><option value="chat_completions">OpenAI Chat Completions</option><option value="responses">OpenAI Responses</option><option value="anthropic">Anthropic Messages</option></select></label>
+              <label><span>Agent 执行模式</span><select id="executionMode"><option value="tools">工具调用（兼容模式）</option><option value="commands">命令流（推荐试用）</option></select></label>
               <label><span>模型</span><input id="aiModel" maxlength="200" placeholder="gpt-4o-mini" required /></label>
               <label><span>语音 Base URL <small id="voiceBaseUrlHint">留空使用 AI Base URL</small></span><input id="voiceBaseUrl" maxlength="500" placeholder="留空则使用上面的 Base URL" /></label>
               <label><span>语音模型</span><input id="voiceModel" maxlength="200" placeholder="gpt-4o-mini-tts" required /></label>
@@ -105,7 +106,7 @@
               <label><span>语音语言</span><input id="voiceLanguage" maxlength="20" value="zh-cn" placeholder="zh-cn" required /></label>
               <label><span>语音速度</span><input id="voiceRate" type="number" min="-10" max="10" step="1" value="0" /></label>
             </div>
-            <div class="settings-actions"><button class="primary-button" type="submit">保存自动回复设置</button><button class="outline-button" type="button" id="voiceCheckButton">检查语音连接</button><span id="automationSaveStatus"></span></div>
+            <div class="settings-actions"><button class="primary-button" type="submit">保存自动回复设置</button><button class="outline-button" type="button" id="aiCheckButton">检查 AI 接口</button><button class="outline-button" type="button" id="voiceCheckButton">检查语音连接</button><span id="automationSaveStatus"></span><span id="aiCheckStatus"></span></div>
           </form>
           <div class="automation-monitor" id="automationMonitor">等待配置</div>
           <div class="automation-monitor" id="voiceMonitor">模拟麦克风由附近其他玩家收听，发送者默认听不到自己的声音。</div>

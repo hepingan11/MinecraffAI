@@ -1,11 +1,11 @@
-import test from "node:test";
+﻿import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { EventQueue } from "../event-queue.mjs";
-import { MinecraftEventSource } from "../minecraft-event-source.mjs";
-import { TaskStateStore } from "../task-state.mjs";
+import { EventQueue } from "../src/core/event-queue.mjs";
+import { MinecraftEventSource } from "../src/minecraft/minecraft-event-source.mjs";
+import { TaskStateStore } from "../src/core/task-state.mjs";
 
 test("EventQueue coalesces realtime snapshots and preserves urgent events", () => {
   const queue = new EventQueue({ maxSize: 2, now: () => 100 });

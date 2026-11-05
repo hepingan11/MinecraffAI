@@ -6,3 +6,8 @@ node_modules/
 minecraft-ai-mod/build/
 minecraft-ai-mod/build-manual/
 minecraft-ai-mod/.gradle/
+# Runtime state is local and should not be committed.
+data/auto-reply.json
+data/experiences.json
+data/knowledge-base.json
+data/tasks.json

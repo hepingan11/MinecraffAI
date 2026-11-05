@@ -1,6 +1,6 @@
-import test from "node:test";
+﻿import test from "node:test";
 import assert from "node:assert/strict";
-import { AutoReplyService } from "../auto-reply.mjs";
+import { AutoReplyService } from "../src/core/auto-reply.mjs";
 
 test("跟随进入目标丢失等终止状态后发送一次停止提示", async () => {
   const messages = [];

@@ -1,9 +1,9 @@
-import test from "node:test";
+﻿import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
-import { PICKAXE_PRIORITY, recognizeMiningPickaxes } from "../mining-tools.mjs";
-import { startMining } from "../minecraft-mod-api.mjs";
+import { PICKAXE_PRIORITY, recognizeMiningPickaxes } from "../src/minecraft/mining-tools.mjs";
+import { startMining } from "../src/minecraft/minecraft-mod-api.mjs";
 
 const item = (itemId, slot, fields = {}) => ({ itemId, slot, name: itemId, count: 1, damage: 0, maxDamage: 100, broken: false, ...fields });
 const snapshot = (items) => ({ ok: true, selectedSlot: 0, miningToolSelection: "pickaxe_priority_v1", items });

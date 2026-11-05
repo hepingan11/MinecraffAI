@@ -1,7 +1,7 @@
-import test from "node:test";
+﻿import test from "node:test";
 import assert from "node:assert/strict";
-import { AutoReplyService, DEFAULT_CONFIG } from "../auto-reply.mjs";
-import { ToolRegistry } from "../tool-registry.mjs";
+import { AutoReplyService, DEFAULT_CONFIG } from "../src/core/auto-reply.mjs";
+import { ToolRegistry } from "../src/core/tool-registry.mjs";
 
 test("ToolRegistry exposes schemas and executes only backend handlers", async () => {
   const calls = [];

@@ -9,12 +9,14 @@ import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.core.Direction;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.inventory.ContainerInput;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket;
 import org.slf4j.Logger;
 
@@ -82,6 +84,8 @@ public final class MinecraftAiClient implements ClientModInitializer {
     private ScheduledFuture<?> followTicker;
     private ScheduledFuture<?> atomicTicker;
     private AtomicTask atomicTask;
+    private ScheduledFuture<?> blueprintTicker;
+    private BlueprintTask blueprintTask;
     private ScheduledFuture<?> moveTicker;
     private MoveTask moveTask;
     private CraftingController crafting;
@@ -113,10 +117,14 @@ public final class MinecraftAiClient implements ClientModInitializer {
         server.createContext("/inventory", exchange -> withAuth(exchange, this::handleInventory));
         server.createContext("/environment", exchange -> withAuth(exchange, this::handleEnvironment));
         server.createContext("/blocks/scan", exchange -> withAuth(exchange, this::handleBlockScan));
+        server.createContext("/blocks/inspect", exchange -> withAuth(exchange, this::handleBlockInspect));
         server.createContext("/blocks/break", exchange -> withAuth(exchange, this::handleBlockBreak));
         server.createContext("/blocks/place", exchange -> withAuth(exchange, this::handleBlockPlace));
         server.createContext("/blocks/status", exchange -> withAuth(exchange, e -> followRequest(e, "GET", this::atomicStatusResponse)));
         server.createContext("/blocks/stop", exchange -> withAuth(exchange, e -> handleOperationStop(e, false)));
+        server.createContext("/blueprint/start", exchange -> withAuth(exchange, this::handleBlueprintStart));
+        server.createContext("/blueprint/status", exchange -> withAuth(exchange, e -> followRequest(e, "GET", this::blueprintStatusResponse)));
+        server.createContext("/blueprint/stop", exchange -> withAuth(exchange, this::handleBlueprintStop));
         server.createContext("/move/start", exchange -> withAuth(exchange, this::handleMoveStart));
         server.createContext("/move/status", exchange -> withAuth(exchange, e -> followRequest(e, "GET", this::moveStatusResponse)));
         server.createContext("/move/stop", exchange -> withAuth(exchange, e -> handleOperationStop(e, true)));
@@ -222,6 +230,7 @@ public final class MinecraftAiClient implements ClientModInitializer {
         response.addProperty("connected", client.player != null && client.level != null);
         response.addProperty("atomicActionsVersion", 1);
         response.addProperty("craftingVersion", 1);
+        response.addProperty("blueprintVersion", 1);
         respond(exchange, 200, response);
     }
 
@@ -246,6 +255,7 @@ public final class MinecraftAiClient implements ClientModInitializer {
         if (followTask != null) response.add("follow", followTask.toJson());
         if (moveTask != null) response.add("move", moveTask.toJson());
         if (atomicTask != null) response.add("action", atomicTask.toJson());
+        if (blueprintTask != null) response.add("blueprint", blueprintTask.toJson());
         if (crafting != null && crafting.status().has("craft")) response.add("craft", crafting.status().get("craft"));
         return response;
     }
@@ -253,6 +263,7 @@ public final class MinecraftAiClient implements ClientModInitializer {
     private String currentActivity() {
         if (client.player == null || client.level == null) return "disconnected";
         if (miningTask != null && miningTask.isActive()) return "mining";
+        if (blueprintTask != null && blueprintTask.active) return "building";
         if (followTask != null && followTask.isActive()) return "following";
         if (crafting != null && crafting.isActive()) return "crafting";
         if (moveTask != null && moveTask.active) return "moving";
@@ -269,6 +280,7 @@ public final class MinecraftAiClient implements ClientModInitializer {
             case "breaking" -> "正在破坏方块";
             case "moving" -> "正在移动";
             case "crafting" -> "正在执行合成任务";
+            case "building" -> blueprintTask == null ? "正在建造" : blueprintTask.message;
             case "idle" -> "当前没有自动动作";
             default -> "Minecraft 尚未进入世界";
         };
@@ -678,6 +690,10 @@ public final class MinecraftAiClient implements ClientModInitializer {
                     item.addProperty("x", entity.getX());
                     item.addProperty("y", entity.getY());
                     item.addProperty("z", entity.getZ());
+                    if (entity instanceof ItemEntity itemEntity) {
+                        item.addProperty("itemId", itemEntity.getItem().getItem().builtInRegistryHolder().getRegisteredName());
+                        item.addProperty("count", itemEntity.getItem().getCount());
+                    }
                     entities.add(item);
                 }
                 response.add("nearbyEntities", entities);
@@ -1118,6 +1134,175 @@ public final class MinecraftAiClient implements ClientModInitializer {
         respondOnFuture(exchange, result, "无法扫描方块");
     }
 
+    /** Read exact block state facts for a bounded set of positions. The backend
+     * uses this before every blueprint placement so stale or unsafe targets are
+     * rejected by the Minecraft client rather than trusted from a cached plan. */
+    private void handleBlockInspect(HttpExchange exchange) throws IOException {
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+            respond(exchange, 405, error("只支持 POST"));
+            return;
+        }
+        final JsonObject body;
+        try { body = JsonParser.parseString(readBody(exchange)).getAsJsonObject(); }
+        catch (Exception failure) { respond(exchange, 400, error("检查方块参数无效")); return; }
+        CompletableFuture<JsonObject> result = new CompletableFuture<>();
+        client.execute(() -> {
+            if (result.isDone()) return;
+            try { result.complete(inspectBlocksResponse(body)); }
+            catch (Throwable failure) { result.completeExceptionally(failure); }
+        });
+        respondOnFuture(exchange, result, "无法检查方块");
+    }
+
+    private void handleBlueprintStart(HttpExchange exchange) throws IOException {
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) { respond(exchange, 405, error("只支持 POST")); return; }
+        final JsonObject body;
+        try { body = JsonParser.parseString(readBody(exchange, 8 * 1024 * 1024)).getAsJsonObject(); }
+        catch (Exception failure) { respond(exchange, 400, error(failure.getMessage() == null ? "蓝图参数无效" : failure.getMessage())); return; }
+        CompletableFuture<JsonObject> result = new CompletableFuture<>();
+        client.execute(() -> {
+            if (result.isDone()) return;
+            try { result.complete(startBlueprintResponse(body)); }
+            catch (Throwable failure) { result.completeExceptionally(failure); }
+        });
+        respondOnFuture(exchange, result, "无法开始蓝图建造");
+    }
+
+    private JsonObject startBlueprintResponse(JsonObject body) {
+        requireAtomicSafety();
+        requireNoAtomicTask();
+        if (blueprintTask != null && blueprintTask.active) throw new IllegalStateException("已有蓝图建造任务正在运行");
+        if (miningTask != null && miningTask.isActive()) throw new IllegalStateException("挖矿任务正在运行，请先停止挖矿");
+        if (followTask != null && followTask.isActive()) throw new IllegalStateException("跟随任务正在运行，请先停止跟随");
+        requireDimension(body);
+        if (!body.has("targets") || !body.get("targets").isJsonArray()) throw new IllegalArgumentException("targets 必须是数组");
+        JsonArray rawTargets = body.getAsJsonArray("targets");
+        if (rawTargets.isEmpty() || rawTargets.size() > 32_768) throw new IllegalArgumentException("targets 必须包含 1 到 32768 个目标");
+        ArrayList<BlueprintTarget> targets = new ArrayList<>(rawTargets.size());
+        for (var item : rawTargets) {
+            if (!item.isJsonObject()) throw new IllegalArgumentException("targets 只能包含对象");
+            JsonObject target = item.getAsJsonObject();
+            BlockPos pos = requestBlockPosition(target);
+            if (!target.has("blockId") || !target.get("blockId").isJsonPrimitive()) throw new IllegalArgumentException("目标缺少 blockId");
+            String blockId = target.get("blockId").getAsString().trim().toLowerCase(Locale.ROOT);
+            if (!blockId.matches("minecraft:[a-z0-9_./-]+")) throw new IllegalArgumentException("蓝图方块 ID 无效");
+            String state = target.has("blockState") ? target.get("blockState").getAsString().trim().toLowerCase(Locale.ROOT) : blockId;
+            if (state.length() > 512 || !(state.equals(blockId) || state.startsWith(blockId + "["))) throw new IllegalArgumentException("蓝图 blockState 无效");
+            targets.add(new BlueprintTarget(pos, blockId, state));
+        }
+        targets.sort(Comparator.comparingInt((BlueprintTarget target) -> target.position.getY())
+            .thenComparingInt(target -> target.position.getZ()).thenComparingInt(target -> target.position.getX()));
+        blueprintTask = new BlueprintTask(targets, body.has("allowBreaking") && body.get("allowBreaking").getAsBoolean(), client.level);
+        scheduleBlueprint();
+        return blueprintStatusResponse();
+    }
+
+    private void handleBlueprintStop(HttpExchange exchange) throws IOException {
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) { respond(exchange, 405, error("只支持 POST")); return; }
+        final JsonObject body;
+        try { body = JsonParser.parseString(readBody(exchange)).getAsJsonObject(); }
+        catch (Exception failure) { respond(exchange, 400, error("停止蓝图参数无效")); return; }
+        CompletableFuture<JsonObject> result = new CompletableFuture<>();
+        client.execute(() -> {
+            try {
+                if (blueprintTask == null || !blueprintTask.id.equals(body.has("taskId") ? body.get("taskId").getAsString() : "")) throw new IllegalArgumentException("蓝图任务 ID 不匹配");
+                finishBlueprint("cancelled", "蓝图建造已取消");
+                result.complete(blueprintStatusResponse());
+            } catch (Throwable failure) { result.completeExceptionally(failure); }
+        });
+        respondOnFuture(exchange, result, "无法停止蓝图建造");
+    }
+
+    private JsonObject blueprintStatusResponse() {
+        JsonObject response = baseResponse();
+        response.addProperty("status", blueprintTask == null ? "idle" : blueprintTask.state);
+        if (blueprintTask != null) response.add("blueprint", blueprintTask.toJson());
+        return response;
+    }
+
+    private void scheduleBlueprint() {
+        BlueprintTask scheduled = blueprintTask;
+        AtomicBoolean pending = new AtomicBoolean();
+        if (blueprintTicker != null) blueprintTicker.cancel(false);
+        blueprintTicker = miningExecutor.scheduleAtFixedRate(() -> {
+            if (!pending.compareAndSet(false, true)) return;
+            client.execute(() -> { try { if (blueprintTask == scheduled) tickBlueprint(); } finally { pending.set(false); } });
+        }, 0, 100, TimeUnit.MILLISECONDS);
+    }
+
+    private void tickBlueprint() {
+        BlueprintTask task = blueprintTask;
+        if (task == null || !task.active) return;
+        try {
+            requireAtomicSafety();
+            if (client.level != task.level || client.isPaused() || client.gui.screen() != null) throw new IllegalStateException("世界已切换或游戏界面打开");
+            if (System.currentTimeMillis() - task.startedAt > 30 * 60_000L) { finishBlueprint("timeout", "蓝图建造超过 30 分钟"); return; }
+            if (task.waitingAtomic) {
+                if (atomicTask != null && atomicTask.active) return;
+                if (atomicTask == null || !atomicTask.id.equals(task.operationId)) throw new IllegalStateException("蓝图操作状态丢失");
+                if (!"completed".equals(atomicTask.state)) { finishBlueprint("error", atomicTask.message); return; }
+                BlueprintTarget target = task.targets.get(task.cursor);
+                if (!matchesBlueprintState(client.level.getBlockState(target.position), target)) { finishBlueprint("error", "放置完成但方块状态与蓝图不一致：" + target.position.toShortString()); return; }
+                task.completed++; task.cursor++; task.waitingAtomic = false; task.operationId = null;
+                if (task.cursor >= task.targets.size()) { finishBlueprint("completed", "蓝图建造完成"); return; }
+            }
+            if (moveTask != null && moveTask.active) { tickMove(); return; }
+            if (moveTask != null && !moveTask.active) {
+                if (!"completed".equals(moveTask.state)) { finishBlueprint(moveTask.state, moveTask.message); return; }
+                moveTask = null;
+            }
+            int examined = 0;
+            while (examined < task.targets.size()) {
+                if (task.cursor >= task.targets.size()) { finishBlueprint("completed", "蓝图建造完成"); return; }
+                BlueprintTarget target = task.targets.get(task.cursor);
+                var current = client.level.getBlockState(target.position);
+                if (matchesBlueprintState(current, target)) { task.completed++; task.cursor++; examined++; continue; }
+                if (!current.isAir() && !current.canBeReplaced()) {
+                    if (!task.allowBreaking) { finishBlueprint("blocked", "目标位置有不可替换方块：" + target.position.toShortString()); return; }
+                    JsonObject request = new JsonObject(); request.addProperty("x", target.position.getX()); request.addProperty("y", target.position.getY()); request.addProperty("z", target.position.getZ()); request.addProperty("dimension", task.level.dimension().identifier().toString()); request.addProperty("expectedBlockId", current.getBlock().builtInRegistryHolder().getRegisteredName());
+                    JsonObject started = breakBlockResponse(request);
+                    task.waitingAtomic = true; task.operationId = started.getAsJsonObject("action").get("id").getAsString(); task.state = "clearing"; task.message = "正在清除蓝图目标位置的障碍"; return;
+                }
+                if (!withinReach(target.position)) {
+                    moveTask = new MoveTask(target.position, 2.5, client.level, client.player.position());
+                    task.state = "moving"; task.message = "正在前往蓝图目标"; tickMove(); return;
+                }
+                Direction face = blueprintSupportFace(target.position, target.blockState);
+                if (face == null) { finishBlueprint("blocked", "蓝图目标没有可用支撑：" + target.position.toShortString()); return; }
+                JsonObject request = new JsonObject(); request.addProperty("x", target.position.getX()); request.addProperty("y", target.position.getY()); request.addProperty("z", target.position.getZ()); request.addProperty("dimension", task.level.dimension().identifier().toString()); request.addProperty("itemId", target.blockId); request.addProperty("face", face.getName()); request.addProperty("desiredState", target.blockState);
+                JsonObject started = placeBlockResponse(request);
+                task.waitingAtomic = true; task.operationId = started.getAsJsonObject("action").get("id").getAsString(); task.state = "placing"; task.message = "正在按蓝图状态放置方块"; return;
+            }
+            if (task.cursor < task.targets.size()) { finishBlueprint("blocked", "蓝图中存在没有支撑的目标方块"); }
+        } catch (Throwable failure) { finishBlueprint("error", failure.getMessage() == null ? "蓝图建造失败" : failure.getMessage()); }
+    }
+
+    private boolean withinReach(BlockPos pos) {
+        return client.player.getEyePosition().distanceToSqr(Vec3.atCenterOf(pos)) <= 4.5 * 4.5;
+    }
+
+    private Direction blueprintSupportFace(BlockPos target, String desiredState) {
+        Map<String, String> properties = parseStateProperties(desiredState);
+        List<Direction> order = new ArrayList<>(List.of(Direction.UP, Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST, Direction.DOWN));
+        if ("top".equals(properties.get("half")) || "top".equals(properties.get("type"))) order = new ArrayList<>(List.of(Direction.DOWN, Direction.UP, Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST));
+        for (Direction face : order) {
+            var support = client.level.getBlockState(target.relative(face.getOpposite()));
+            BlockPos supportPos = target.relative(face.getOpposite());
+            if (!support.isAir() && support.getFluidState().isEmpty() && !support.canBeReplaced()
+                && !support.getCollisionShape(client.level, supportPos).isEmpty()) return face;
+        }
+        return null;
+    }
+
+    private void finishBlueprint(String state, String message) {
+        if (blueprintTask == null || !blueprintTask.active) return;
+        blueprintTask.active = false; blueprintTask.state = state; blueprintTask.message = message;
+        if (blueprintTicker != null) { blueprintTicker.cancel(false); blueprintTicker = null; }
+        if (moveTask != null && moveTask.active) finishMove("cancelled", "蓝图任务结束");
+        if (atomicTask != null && atomicTask.active) finishAtomic("cancelled", "蓝图任务结束");
+        releaseMoveInput();
+    }
+
     private void handleBlockBreak(HttpExchange exchange) throws IOException {
         if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
             respond(exchange, 405, error("只支持 POST"));
@@ -1215,15 +1400,17 @@ public final class MinecraftAiClient implements ClientModInitializer {
 
     private JsonObject scanBlocksResponse(JsonObject body) {
         requireAtomicWorld();
-        validateAtomicBody(body, Set.of("x", "y", "z", "radius", "maxResults", "blocks"), Set.of());
-        for (String name : List.of("radius", "maxResults")) {
+        validateAtomicBody(body, Set.of("x", "y", "z", "radius", "verticalRadius", "maxResults", "blocks"), Set.of());
+        for (String name : List.of("radius", "verticalRadius", "maxResults")) {
             if (body.has(name) && (!body.get(name).isJsonPrimitive() || !body.getAsJsonPrimitive(name).isNumber()
                 || !Double.isFinite(body.get(name).getAsDouble()) || body.get(name).getAsDouble() != Math.rint(body.get(name).getAsDouble()))) throw new IllegalArgumentException(name + " 必须是整数");
         }
-        int radius = integerField(body, "radius", 1, 16, 8);
-        int maxResults = integerField(body, "maxResults", 1, 64, 32);
-        if (body.has("radius") && (body.get("radius").getAsDouble() < 1 || body.get("radius").getAsDouble() > 16)
-            || body.has("maxResults") && (body.get("maxResults").getAsDouble() < 1 || body.get("maxResults").getAsDouble() > 64)) throw new IllegalArgumentException("扫描范围或结果数量超限");
+        int radius = integerField(body, "radius", 1, 64, 8);
+        int verticalRadius = integerField(body, "verticalRadius", 1, 32, Math.min(radius, 16));
+        int maxResults = integerField(body, "maxResults", 1, 256, 32);
+        if (body.has("radius") && (body.get("radius").getAsDouble() < 1 || body.get("radius").getAsDouble() > 64)
+            || body.has("verticalRadius") && (body.get("verticalRadius").getAsDouble() < 1 || body.get("verticalRadius").getAsDouble() > 32)
+            || body.has("maxResults") && (body.get("maxResults").getAsDouble() < 1 || body.get("maxResults").getAsDouble() > 256)) throw new IllegalArgumentException("扫描范围或结果数量超限");
         Set<String> filters = new HashSet<>();
         if (body.has("blocks")) {
             if (!body.get("blocks").isJsonArray() || body.getAsJsonArray("blocks").size() < 1 || body.getAsJsonArray("blocks").size() > 16) throw new IllegalArgumentException("blocks 必须包含 1 到 16 个方块 ID");
@@ -1235,10 +1422,10 @@ public final class MinecraftAiClient implements ClientModInitializer {
             }
         }
         BlockPos center = body.has("x") || body.has("y") || body.has("z") ? requestBlockPosition(body) : client.player.blockPosition();
-        requireBlockDistance(center, 32.0);
+        requireBlockDistance(center, 64.0);
         JsonArray blocks = new JsonArray();
         List<BlockPos> candidates = new ArrayList<>();
-        for (int y = -radius; y <= radius; y++) for (int x = -radius; x <= radius; x++) for (int z = -radius; z <= radius; z++) {
+        for (int y = -verticalRadius; y <= verticalRadius; y++) for (int x = -radius; x <= radius; x++) for (int z = -radius; z <= radius; z++) {
             BlockPos pos = center.offset(x, y, z);
             if (!client.level.isLoaded(pos)) continue;
             var state = client.level.getBlockState(pos);
@@ -1260,11 +1447,47 @@ public final class MinecraftAiClient implements ClientModInitializer {
         JsonObject response = baseResponse();
         response.add("center", MiningTask.blockPositionJson(center));
         response.addProperty("radius", radius);
+        response.addProperty("verticalRadius", verticalRadius);
         response.addProperty("dimension", client.level.dimension().identifier().toString());
         response.addProperty("maxResults", maxResults);
         response.add("blocks", blocks);
         response.addProperty("matchedCount", candidates.size());
         response.addProperty("truncated", candidates.size() > maxResults);
+        return response;
+    }
+
+    /** Exact, bounded world inspection used by backend blueprint diffing. */
+    private JsonObject inspectBlocksResponse(JsonObject body) {
+        requireAtomicWorld();
+        validateAtomicBody(body, Set.of("dimension", "positions"), Set.of("dimension", "positions"));
+        requireDimension(body);
+        JsonArray requested = body.getAsJsonArray("positions");
+        if (requested.size() < 1 || requested.size() > 512) throw new IllegalArgumentException("positions 必须包含 1 到 512 个坐标");
+        JsonArray blocks = new JsonArray();
+        for (var item : requested) {
+            if (!item.isJsonObject()) throw new IllegalArgumentException("positions 只能包含坐标对象");
+            BlockPos pos = requestBlockPosition(item.getAsJsonObject());
+            JsonObject block = new JsonObject();
+            block.add("position", MiningTask.blockPositionJson(pos));
+            boolean loaded = client.level.isLoaded(pos);
+            block.addProperty("loaded", loaded);
+            if (!loaded) {
+                block.addProperty("blockId", "minecraft:unloaded");
+                block.addProperty("air", false);
+                block.addProperty("replaceable", false);
+                blocks.add(block);
+                continue;
+            }
+            var state = client.level.getBlockState(pos);
+            block.addProperty("blockId", state.getBlock().builtInRegistryHolder().getRegisteredName());
+            block.addProperty("air", state.isAir());
+            block.addProperty("replaceable", state.canBeReplaced());
+            block.addProperty("collision", !state.getCollisionShape(client.level, pos).isEmpty());
+            blocks.add(block);
+        }
+        JsonObject response = baseResponse();
+        response.addProperty("dimension", client.level.dimension().identifier().toString());
+        response.add("blocks", blocks);
         return response;
     }
 
@@ -1408,6 +1631,7 @@ public final class MinecraftAiClient implements ClientModInitializer {
                         net.minecraft.world.level.ClipContext.Block.OUTLINE, net.minecraft.world.level.ClipContext.Fluid.NONE, client.player));
                     if (hit.getType() != net.minecraft.world.phys.HitResult.Type.BLOCK || !hit.getBlockPos().equals(support) || hit.getDirection() != task.face) throw new IllegalStateException("放置面被遮挡");
                     if (!client.level.getBlockState(task.position).canBeReplaced()) throw new IllegalStateException("目标不可替换");
+                    orientForDesiredState(task);
                     var interaction = client.gameMode.useItemOn(client.player, InteractionHand.MAIN_HAND, new BlockHitResult(faceCenter, task.face, support, false));
                     task.sent = true;
                     if (!interaction.consumesAction()) finishAtomic("error", "游戏拒绝放置方块");
@@ -1435,6 +1659,56 @@ public final class MinecraftAiClient implements ClientModInitializer {
         atomicTask.message = message;
         if (client.gameMode != null) client.gameMode.stopDestroyBlock();
         if (atomicTicker != null) { atomicTicker.cancel(false); atomicTicker = null; }
+    }
+
+    private Map<String, String> parseStateProperties(String state) {
+        Map<String, String> result = new HashMap<>();
+        int open = state == null ? -1 : state.indexOf('[');
+        if (open < 0 || !state.endsWith("]")) return result;
+        String contents = state.substring(open + 1, state.length() - 1);
+        if (contents.isBlank()) return result;
+        for (String part : contents.split(",")) {
+            int equals = part.indexOf('=');
+            if (equals > 0) result.put(part.substring(0, equals).trim().toLowerCase(Locale.ROOT), part.substring(equals + 1).trim().toLowerCase(Locale.ROOT));
+        }
+        return result;
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private String propertyValue(BlockState state, String name) {
+        for (var property : state.getProperties()) {
+            if (!property.getName().equals(name)) continue;
+            return String.valueOf(state.getValue(property)).toLowerCase(Locale.ROOT);
+        }
+        return null;
+    }
+
+    private boolean matchesBlueprintState(BlockState state, BlueprintTarget target) {
+        if (!state.getBlock().builtInRegistryHolder().getRegisteredName().equals(target.blockId)) return false;
+        for (var entry : parseStateProperties(target.blockState).entrySet()) {
+            String actual = propertyValue(state, entry.getKey());
+            if (actual == null || !actual.equals(entry.getValue())) return false;
+        }
+        return true;
+    }
+
+    private void orientForDesiredState(AtomicTask task) {
+        if (task.desiredState == null || client.player == null) return;
+        Map<String, String> properties = parseStateProperties(task.desiredState);
+        String facing = properties.get("facing");
+        if (facing == null) {
+            String axis = properties.get("axis");
+            facing = "x".equals(axis) ? "east" : "z".equals(axis) ? "south" : null;
+        }
+        if (facing != null) {
+            float yaw = switch (facing) {
+                case "north" -> 180.0F;
+                case "east" -> -90.0F;
+                case "west" -> 90.0F;
+                default -> 0.0F;
+            };
+            client.player.setYRot(yaw);
+        }
     }
 
     private JsonObject atomicStatusResponse() {
@@ -1476,7 +1750,7 @@ public final class MinecraftAiClient implements ClientModInitializer {
 
     private JsonObject placeBlockResponse(JsonObject body) {
         requireAtomicActionAvailable();
-        validateAtomicBody(body, Set.of("x", "y", "z", "dimension", "itemId", "face"), Set.of("x", "y", "z", "dimension", "itemId"));
+        validateAtomicBody(body, Set.of("x", "y", "z", "dimension", "itemId", "face", "desiredState"), Set.of("x", "y", "z", "dimension", "itemId"));
         requireDimension(body);
         BlockPos target = requestBlockPosition(body);
         requireInteractionReach(target);
@@ -1495,6 +1769,11 @@ public final class MinecraftAiClient implements ClientModInitializer {
         atomicTask.face = face;
         atomicTask.itemId = itemId;
         atomicTask.expected = blockItem.getBlock().builtInRegistryHolder().getRegisteredName();
+        if (body.has("desiredState")) {
+            String desired = body.get("desiredState").getAsString().trim().toLowerCase(Locale.ROOT);
+            if (desired.length() > 512 || !(desired.equals(atomicTask.expected) || desired.startsWith(atomicTask.expected + "["))) throw new IllegalArgumentException("desiredState 与 itemId 不匹配");
+            atomicTask.desiredState = desired;
+        }
         atomicTask.selectedItem = inventoryItemJson(slot);
         scheduleAtomic();
         return atomicStatusResponse();
@@ -1963,13 +2242,18 @@ public final class MinecraftAiClient implements ClientModInitializer {
     }
 
     private String readBody(HttpExchange exchange) throws IOException {
+        return readBody(exchange, MAX_BODY_BYTES);
+    }
+
+    private String readBody(HttpExchange exchange, int maxBytes) throws IOException {
+        if (maxBytes < 1 || maxBytes > 16 * 1024 * 1024) throw new IllegalArgumentException("请求大小限制无效");
         try (InputStream input = exchange.getRequestBody()) {
-            byte[] buffer = new byte[MAX_BODY_BYTES + 1];
+            byte[] buffer = new byte[maxBytes + 1];
             int offset = 0;
             int read;
             while ((read = input.read(buffer, offset, buffer.length - offset)) != -1) {
                 offset += read;
-                if (offset > MAX_BODY_BYTES) throw new IllegalArgumentException("请求体过大");
+                if (offset > maxBytes) throw new IllegalArgumentException("请求体过大");
                 if (offset == buffer.length) break;
             }
             return new String(buffer, 0, offset, StandardCharsets.UTF_8);
@@ -2021,6 +2305,7 @@ public final class MinecraftAiClient implements ClientModInitializer {
         String message = "正在执行方块操作";
         String expected;
         String itemId;
+        String desiredState;
         JsonObject selectedItem;
         Direction face;
 
@@ -2033,10 +2318,47 @@ public final class MinecraftAiClient implements ClientModInitializer {
             json.addProperty("id", id); json.addProperty("kind", kind); json.addProperty("active", active);
             json.addProperty("state", state); json.addProperty("message", message);
             json.addProperty("beforeBlockId", before); json.addProperty("expectedBlockId", expected);
+            if (desiredState != null) json.addProperty("desiredState", desiredState);
             json.addProperty("changed", state.equals("completed"));
             json.addProperty("verification", "client_snapshot");
             if (selectedItem != null) json.add("selectedTool", selectedItem);
             json.addProperty("startedAt", startedAt); json.add("position", MiningTask.blockPositionJson(position));
+            return json;
+        }
+    }
+
+    private record BlueprintTarget(BlockPos position, String blockId, String blockState) {}
+
+    private static final class BlueprintTask {
+        final String id = UUID.randomUUID().toString();
+        final List<BlueprintTarget> targets;
+        final boolean allowBreaking;
+        final net.minecraft.client.multiplayer.ClientLevel level;
+        final long startedAt = System.currentTimeMillis();
+        int cursor;
+        int completed;
+        boolean active = true;
+        boolean waitingAtomic;
+        String operationId;
+        String state = "running";
+        String message = "蓝图任务已创建";
+
+        BlueprintTask(List<BlueprintTarget> targets, boolean allowBreaking, net.minecraft.client.multiplayer.ClientLevel level) {
+            this.targets = targets; this.allowBreaking = allowBreaking; this.level = level;
+        }
+
+        JsonObject toJson() {
+            JsonObject json = new JsonObject();
+            json.addProperty("id", id); json.addProperty("active", active); json.addProperty("state", state);
+            json.addProperty("message", message); json.addProperty("total", targets.size());
+            json.addProperty("completed", completed); json.addProperty("remaining", Math.max(0, targets.size() - completed));
+            json.addProperty("cursor", cursor); json.addProperty("allowBreaking", allowBreaking); json.addProperty("startedAt", startedAt);
+            if (cursor < targets.size()) {
+                BlueprintTarget target = targets.get(cursor);
+                json.add("current", MiningTask.blockPositionJson(target.position));
+                json.addProperty("currentBlockId", target.blockId); json.addProperty("currentBlockState", target.blockState);
+            }
+            if (operationId != null) json.addProperty("operationId", operationId);
             return json;
         }
     }

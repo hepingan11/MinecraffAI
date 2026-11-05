@@ -1,6 +1,6 @@
-import test from "node:test";
+﻿import test from "node:test";
 import assert from "node:assert/strict";
-import { validateTeleportPlan, teleportCommandFromChat, teleportReplyFromResult } from "../teleport-skill.mjs";
+import { validateTeleportPlan, teleportCommandFromChat, teleportReplyFromResult } from "../src/skills/teleport-skill.mjs";
 
 test("传送只接受明确的到我这里请求，并从聊天前缀解析玩家 ID", () => {
   assert.deepEqual(teleportCommandFromChat("<Alex> @MinecraftAI 传送到我这里来"), { action: "request", targetName: "Alex" });

@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "id": "chest_in_wall",
+  "title": "墙内箱子：定位、接近和容器交互",
+  "source": {
+    "project": "minecraft-numen",
+    "gameVersion": "1.21.1",
+    "scenarioClass": "com.dwinovo.numen.scenario.WalledChest",
+    "sourceFile": "numen/common/src/bench/java/com/dwinovo/numen/scenario/WalledChest.java"
+  },
+  "targetGameVersion": "26.2",
+  "userGoal": "把墙里的钻石拿给我",
+  "budget": {
+    "turns": 30,
+    "minutes": 10
+  },
+  "initialState": {
+    "arena": {
+      "size": 20,
+      "height": 12,
+      "floor": {"blockId": "minecraft:stone", "topY": 0, "depth": 3},
+      "boundary": {"blockId": "minecraft:barrier", "thickness": 1}
+    },
+    "player": {
+      "start": {"x": 10, "y": 1, "z": 4},
+      "owner": {"x": 3, "y": 1, "z": 3}
+    },
+    "inventory": [],
+    "world": {
+      "fills": [
+        {"from": {"x": 7, "y": 1, "z": 12}, "to": {"x": 13, "y": 3, "z": 14}, "blockId": "minecraft:stone"}
+      ],
+      "blocks": [
+        {
+          "pos": {"x": 10, "y": 1, "z": 12},
+          "blockId": "minecraft:chest",
+          "state": {"facing": "north"},
+          "contents": [{"slot": 0, "itemId": "minecraft:diamond", "count": 5}]
+        },
+        {"pos": {"x": 10, "y": 2, "z": 12}, "blockId": "minecraft:glass"}
+      ]
+    }
+  },
+  "goals": {
+    "success": [
+      {"type": "item_delivered_or_handed_over", "itemId": "minecraft:diamond", "minimum": 5}
+    ],
+    "subgoals": [
+      {"id": "chest_opened", "type": "container_interacted", "pos": {"x": 10, "y": 1, "z": 12}},
+      {"id": "chest_emptied", "type": "container_item_maximum", "pos": {"x": 10, "y": 1, "z": 12}, "itemId": "minecraft:diamond", "maximum": 0}
+    ],
+    "guards": [
+      {"id": "preserve_unrelated_world", "type": "avoid_unnecessary_block_breaking"}
+    ]
+  },
+  "referencePlan": [
+    {"phase": "observe_and_locate", "actionKinds": ["observe", "scan_blocks"]},
+    {"phase": "reach_container_front", "actionKinds": ["move_to"], "target": {"x": 10, "y": 1, "z": 11}},
+    {"phase": "open_and_take", "actionKinds": ["use_container", "withdraw_item"], "container": {"x": 10, "y": 1, "z": 12}, "slot": 0},
+    {"phase": "verify_and_deliver", "actionKinds": ["inventory", "move_to", "deliver_item"]}
+  ],
+  "requiredCapabilities": ["container_interaction", "safe_navigation", "inventory_verification", "item_delivery"],
+  "failureCases": ["no_path", "container_not_found", "container_unavailable", "inventory_full", "item_missing", "no_progress"],
+  "migration": {
+    "kind": "converted_benchmark",
+    "standardProcedure": "扫描并定位墙内箱子；从箱子正面接近；打开容器并取出5颗钻石；确认箱内清空，再交付给主人。",
+    "productionUse": "当前项目缺少通用容器交互和交付工具，先作为待实现能力的评测场景。"
+  }
+}

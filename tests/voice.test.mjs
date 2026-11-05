@@ -1,9 +1,9 @@
-import test from "node:test";
+﻿import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
-import { sendVoice, getVoiceStatus } from "../minecraft-mod-api.mjs";
-import { AutoReplyService } from "../auto-reply.mjs";
+import { sendVoice, getVoiceStatus } from "../src/minecraft/minecraft-mod-api.mjs";
+import { AutoReplyService } from "../src/core/auto-reply.mjs";
 
 test("voice reports real transport errors, rejects old queued responses and checks before TTS", async (t) => {
   let responseBody = { ok: true, voiceBridgeVersion: 2, completed: true, framesSent: 2 };

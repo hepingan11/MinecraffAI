@@ -1,10 +1,10 @@
-import test from "node:test";
+﻿import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
 import { WebSocketServer } from "ws";
-import { QWEN_TTS_URL, QWEN_TTS_MODEL, normalizeQwenTtsUrl, synthesizeQwenTts } from "../qwen-tts.mjs";
-import { AutoReplyService, DEFAULT_CONFIG, normalizeConfig, publicConfig } from "../auto-reply.mjs";
+import { QWEN_TTS_URL, QWEN_TTS_MODEL, normalizeQwenTtsUrl, synthesizeQwenTts } from "../src/integrations/qwen-tts.mjs";
+import { AutoReplyService, DEFAULT_CONFIG, normalizeConfig, publicConfig } from "../src/core/auto-reply.mjs";
 
 async function realtimeServer(t, handler) {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });

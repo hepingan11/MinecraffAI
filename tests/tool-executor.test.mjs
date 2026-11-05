@@ -1,7 +1,7 @@
-import test from "node:test";
+﻿import test from "node:test";
 import assert from "node:assert/strict";
-import { ToolRegistry } from "../tool-registry.mjs";
-import { ToolExecutor } from "../tool-executor.mjs";
+import { ToolRegistry } from "../src/core/tool-registry.mjs";
+import { ToolExecutor } from "../src/core/tool-executor.mjs";
 
 test("ToolRegistry applies Numen-style backend schema validation and lenient lookup", async () => {
   const registry = new ToolRegistry();

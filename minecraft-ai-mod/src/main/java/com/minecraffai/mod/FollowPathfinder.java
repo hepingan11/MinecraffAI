@@ -24,6 +24,21 @@ public final class FollowPathfinder {
     public interface Terrain {
         List<Double> standingHeights(int x, int z, double minY, double maxY);
         boolean canTraverse(Point from, Point to);
+        /**
+         * Checks a diagonal step without allowing the player to squeeze through
+         * the corner of two blocked cells. Implementations may override this
+         * when they have more accurate collision information.
+         */
+        default boolean canTraverseDiagonal(Point from, Point to) {
+            if (from.x() == to.x() || from.z() == to.z()) return canTraverse(from, to);
+            Point sideX = new Point(to.x(), from.y(), from.z());
+            Point sideZ = new Point(from.x(), from.y(), to.z());
+            return canTraverse(from, sideX)
+                && canTraverse(from, sideZ)
+                && canTraverse(sideX, to)
+                && canTraverse(sideZ, to)
+                && canTraverse(from, to);
+        }
         default boolean allowHeightChange(double fromY, double toY) {
             return FollowPathfinder.allowedHeightChange(fromY, toY);
         }
@@ -58,7 +73,10 @@ public final class FollowPathfinder {
         double bestRemaining = initialRemaining;
         int visited = 0;
         boolean reached = false;
-        int[][] directions = {{1, 0}, {0, 1}, {-1, 0}, {0, -1}};
+        int[][] directions = {
+            {1, 0}, {1, 1}, {0, 1}, {-1, 1},
+            {-1, 0}, {-1, -1}, {0, -1}, {1, -1},
+        };
         while (!open.isEmpty() && visited < MAX_VISITED) {
             Entry entry = open.poll();
             if (entry.cost > costs.getOrDefault(entry.point, Double.POSITIVE_INFINITY) + EPSILON) continue;
@@ -76,9 +94,11 @@ public final class FollowPathfinder {
                 for (double height : terrain.standingHeights(x, z, current.y - terrain.maxDrop(), current.y + MAX_RISE)) {
                     if (!terrain.allowHeightChange(current.y, height)) continue;
                     Point next = new Point(x, height, z);
-                    double cost = entry.cost + 1.0 + Math.abs(height - current.y) * 0.2;
+                    double stepCost = direction[0] != 0 && direction[1] != 0 ? Math.sqrt(2.0) : 1.0;
+                    double cost = entry.cost + stepCost + Math.abs(height - current.y) * 0.2;
                     if (cost + EPSILON >= costs.getOrDefault(next, Double.POSITIVE_INFINITY)) continue;
-                    if (!terrain.canTraverse(current, next)) continue;
+                    boolean diagonal = direction[0] != 0 && direction[1] != 0;
+                    if (diagonal ? !terrain.canTraverseDiagonal(current, next) : !terrain.canTraverse(current, next)) continue;
                     costs.put(next, cost);
                     previous.put(next, current);
                     open.add(new Entry(next, cost, cost + remaining(next, targetX, targetY, targetZ, followDistance)));

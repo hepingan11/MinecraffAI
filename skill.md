@@ -12,7 +12,9 @@
 
 ## 后端工具登记与执行
 
-自动回复使用后端 `ToolRegistry` 提供 OpenAI 兼容的工具 schema，`GET /api/tools` 可查看当前登记清单。模型产生的调用由 `ToolExecutor` 串行派发；参数在后端重新按 schema 校验，处理器异常、未知工具、超时和紧急中断都会转成结构化 `executionError`，然后回写下一轮模型上下文。模型不能直接访问 Mod API，也不能绕过窗口认证、任务参数限制或安全状态检查。
+自动回复使用后端 `ToolRegistry` 提供统一工具定义，支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种模型请求格式；`GET /api/tools` 可查看当前登记清单。模型产生的调用由 `ToolExecutor` 串行派发；参数在后端重新按 schema 校验，处理器异常、未知工具、超时和紧急中断都会转成结构化 `executionError`，然后按对应协议回写下一轮模型上下文。模型不能直接访问 Mod API，也不能绕过窗口认证、任务参数限制或安全状态检查。
+
+设置页的“检查 AI 接口”调用 `POST /api/automation/check`，由后端使用当前配置发起一次无工具轻量请求，返回协议、HTTP 状态和延迟；检测失败会返回结构化错误，API Key 不会出现在响应中。
 
 `minecraft_skill` 是只读参考工具，可按 `minecraft_inventory`、`minecraft_mining` 等名称读取本文件中对应的技能边界；它不会执行 Minecraft 动作。
 
@@ -148,7 +150,7 @@ node F:\Project\MinecraffAI\minecraft-chat-bridge.mjs mining-stop --window-id <�
 
 ## 技能：minecraft_explore_for_ore
 
-这是后端维护的有限 AgentLoop，用于“去附近寻找并采集矿物”。参数为 `targetBlocks`（可选，默认包含煤、铁、铜、金、红石、青金石、钻石、绿宝石、下界石英矿和远古残骸及其深层变体）、`quantity`（需要新增的掉落物数量，1–256）、`maxMinutes`（0–30）、`maxBlocks`（1–512）、`maxExplorationSteps`（1–32）、`scanRadius`（4–16）和 `returnWhenFull`。
+这是后端维护的有限 AgentLoop，用于“去附近寻找并采集矿物”。参数为 `targetBlocks`（可选，默认包含煤、铁、铜、金、红石、青金石、钻石、绿宝石、下界石英矿和远古残骸及其深层变体）、`quantity`（需要新增的掉落物数量，1–256）、`maxMinutes`（0–15）、`maxBlocks`（1–512）、`maxExplorationSteps`（1–32）、`scanRadius`（4–16）和 `returnWhenFull`。
 
 每轮按以下顺序执行：读取位置和背包；半径 8 再到配置半径扫描当前已加载区块；选择可见且可达的目标，或靠近被遮挡目标的安全观察点后重新扫描；使用正常移动和原版挖掘；重新读取背包确认掉落；数量不足时继续扫描。当前区域没有目标时，后端选择有限探索航点，正常步行加载新区域后再次扫描。
 
@@ -348,3 +350,37 @@ node minecraft-chat-bridge.mjs tp --window-id <窗口ID> --player=Alex
 调试接口 `POST /api/skills/minecraft_craft`，例如 `{"windowId":"<实例 ID>","itemId":"minecraft:stick","quantity":3,"dimension":"minecraft:overworld"}`。支持 `minecraft_tasks` 或 `POST /api/tasks` 按任务 ID 取消，状态/事件包含合成进展。合成操作不允许自动重放。
 
 本技能只执行一个配方。前置木板、木棍、工具的多步依赖由模型逐次查询与调用；不会自动采集材料、放置工作台、熔炼、锻造或执行特殊合成。用户授权目标内的示例流程：查询木板 → 合成木板 → 查询木棍 → 合成木棍 → 检查背包。
+
+
+## Skill: minecraft_chop_tree
+
+`minecraft_chop_tree` scans loaded tree logs within a 64-block horizontal radius and a 32-block vertical radius. It selects a reachable cluster, moves with the normal navigation API, breaks each visible log through the backend-compatible-tool selector, and walks to nearby matching item entities before checking the inventory. `quantity` is the requested additional count of log items (1-256); `maxMinutes` is limited to 15 and `maxBlocks` counts log blocks broken. The task never breaks an unverified hidden block and reports structured failures for missing trees, blocked navigation, full inventory, safety stops, and timeouts.
+
+## 技能：minecraft_build_blueprint
+
+使用后端受限蓝图目录（`MC_AI_BLUEPRINT_DIR`，默认 `data/blueprints`；多个目录可用 `MC_AI_BLUEPRINT_DIRS`）中的 `.litematic` 文件建造房屋或其他结构。开始前先调用 `minecraft_blueprints` 获取实际文件名；调用建造工具前还必须先观察玩家位置和 `dimension`，并明确提供 `origin`；`rotation` 只能是 0、90、180、270。蓝图解析、区域尺寸、调色板、方块数量和路径安全均由后端校验，文件名不能穿越目录，单文件最大 64 MB，默认最多 32768 个非空气方块。
+
+执行流程是：读取 Litematic → 统计材料并读取真实背包 → 检查当前世界差异 → 低层和实体方块优先 → 选择已有支撑面 → 走到目标附近 → 重新读取目标 → 调用真实放置接口 → 读回成功后更新任务进度。目标位置已有不可替换方块时默认拒绝；只有用户明确传入 `allowBreaking: true` 才会用正常挖掘接口清障。材料不足默认在开工前拒绝，`allowPartial: true` 可先按现有材料施工，耗尽时保留已完成进度并以可续跑失败返回。
+
+蓝图任务会写入统一任务状态，支持 `minecraft_build_status` 查询、`minecraft_build_stop` 停止，以及 `minecraft_tasks` 的 `resume` 续跑。施工计划一次发送给 Mod，由 Mod 内部 tick 队列执行移动、清障、支撑判断和放置，避免逐方块 HTTP 往返。停止或断线不会回滚已经放置的方块，续跑会重新读取蓝图和世界差异并跳过已完成目标。放置请求携带完整 `blockState`，Mod 会按朝向调整玩家视角并在放置后逐属性读回校验；无法通过原版交互还原的特殊状态会明确失败，不会把近似状态报告为成功。液体和危险方块不会被自动放置。
+
+示例：
+
+```json
+{
+  "name": "japanese_cottage.litematic",
+  "origin": {"x": 100, "y": 64, "z": -20},
+  "rotation": 0,
+  "dimension": "minecraft:overworld"
+}
+```
+
+手动接口为 `POST /api/skills/minecraft_build_blueprint`。请求体额外携带 `windowId`；蓝图文件放入配置的任一目录后，聊天中的模型可以先列出文件，再调用同一个后端工具。
+
+## 技能：minecraft_build_status
+
+通过任务 ID 查询蓝图施工状态，包括总方块数、已完成数、剩余数、当前坐标、当前阶段、材料和失败原因。它是只读查询，不会重新执行放置。
+
+## 技能：minecraft_build_stop
+
+通过任务 ID 停止蓝图施工。后端会中止正在等待的移动、破坏或放置操作，并保留已完成进度；后续可以通过 `minecraft_tasks` 的 `resume` 重新校验后继续。

@@ -1,24 +1,26 @@
-import { createServer } from "node:http";
+﻿import { createServer } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { TextDecoder } from "node:util";
-import { discoverWindows, getEnvironment, getInventory, getMiningStatus, getObservation, getNearbyPlayers, getFollowStatus, setFollowSafety, getVoiceStatus, publicWindow, sendChat, startMining, stopMining, validateMessage, validateMiningPlan, validateFollowPlan } from "./minecraft-mod-api.mjs";
-import { executeFollowCommand, followCommandFromChat } from "./follow-skill.mjs";
-import { executeTeleportCommand, teleportCommandFromChat, validateTeleportPlan } from "./teleport-skill.mjs";
-import { AutoReplyService } from "./auto-reply.mjs";
-import { ToolRegistry } from "./tool-registry.mjs";
-import { ToolExecutor } from "./tool-executor.mjs";
-import { registerAtomicTools } from "./minecraft-atomic-tools.mjs";
-import { registerCraftingTools } from "./minecraft-crafting-tools.mjs";
-import { exploreForOre, registerExplorationTools } from "./minecraft-exploration-tools.mjs";
-import { stopAtomicOperation } from "./minecraft-mod-api.mjs";
-import { EventQueue } from "./event-queue.mjs";
-import { MinecraftEventSource } from "./minecraft-event-source.mjs";
-import { TaskStateStore } from "./task-state.mjs";
-import { KnowledgeBase, MAX_ENTRIES } from "./knowledge-base.mjs";
-import { ExperienceStore, MAX_EXPERIENCES } from "./experience-store.mjs";
+import { discoverWindows, getEnvironment, getInventory, getMiningStatus, getObservation, getNearbyPlayers, getFollowStatus, setFollowSafety, getVoiceStatus, publicWindow, sendChat, startMining, stopMining, validateMessage, validateMiningPlan, validateFollowPlan } from "./src/minecraft/minecraft-mod-api.mjs";
+import { executeFollowCommand, followCommandFromChat } from "./src/skills/follow-skill.mjs";
+import { executeTeleportCommand, teleportCommandFromChat, validateTeleportPlan } from "./src/skills/teleport-skill.mjs";
+import { AutoReplyService } from "./src/core/auto-reply.mjs";
+import { ToolRegistry } from "./src/core/tool-registry.mjs";
+import { ToolExecutor } from "./src/core/tool-executor.mjs";
+import { registerAtomicTools } from "./src/skills/minecraft-atomic-tools.mjs";
+import { registerCraftingTools } from "./src/skills/minecraft-crafting-tools.mjs";
+import { exploreForOre, registerExplorationTools } from "./src/skills/minecraft-exploration-tools.mjs";
+import { chopTrees, registerTreeTools } from "./src/skills/minecraft-tree-tools.mjs";
+import { registerBlueprintTools, runBlueprintBuild } from "./src/skills/minecraft-build-tools.mjs";
+import { stopAtomicOperation } from "./src/minecraft/minecraft-mod-api.mjs";
+import { EventQueue } from "./src/core/event-queue.mjs";
+import { MinecraftEventSource } from "./src/minecraft/minecraft-event-source.mjs";
+import { TaskStateStore } from "./src/core/task-state.mjs";
+import { KnowledgeBase, MAX_ENTRIES } from "./src/core/knowledge-base.mjs";
+import { ExperienceStore, MAX_EXPERIENCES } from "./src/core/experience-store.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(ROOT, "web");
@@ -31,7 +33,7 @@ const experienceStore = new ExperienceStore();
 const eventQueue = new EventQueue();
 const taskState = new TaskStateStore();
 const eventSource = new MinecraftEventSource({ queue: eventQueue });
-const SKILL_NAMES = ["inventory", "environment", "observe", "mining", "explore_for_ore", "players", "follow", "teleport", "tasks", "scan_blocks", "move_to", "break_block", "place_block", "recipes", "craft"];
+const SKILL_NAMES = ["inventory", "environment", "observe", "mining", "explore_for_ore", "chop_tree", "players", "follow", "teleport", "tasks", "scan_blocks", "move_to", "break_block", "place_block", "recipes", "craft", "build_blueprint", "build_status", "build_stop"];
 const SKILL_HEADINGS = {
   recipes: /^## 技能：minecraft_recipes\b/mu,
   craft: /^## 技能：minecraft_craft\b/mu,
@@ -44,10 +46,14 @@ const SKILL_HEADINGS = {
   observe: /^## 技能：minecraft_observe\b/mu,
   mining: /^## 技能：minecraft_mining\b/mu,
   explore_for_ore: /^## 技能：minecraft_explore_for_ore\b/mu,
+  chop_tree: /^## [^\r\n]*minecraft_chop_tree\b/mu,
   players: /^## 技能：minecraft_players\b/mu,
   follow: /^## 技能：minecraft_players\b/mu,
   teleport: /^## 技能：minecraft_teleport\b/mu,
   tasks: /^## 统一事件与任务状态\s*$/mu,
+  build_blueprint: /^## 技能：minecraft_build_blueprint\b/mu,
+  build_status: /^## 技能：minecraft_build_status\b/mu,
+  build_stop: /^## 技能：minecraft_build_stop\b/mu,
 };
 
 async function readMinecraftSkill(name) {
@@ -117,6 +123,14 @@ async function resumeMinecraftTask(task, window) {
     const collected = Number(task.progress?.collected ?? 0);
     return exploreForOre(window, { ...(task.params || task.goal), quantity: Math.max(1, requested - collected) }, { taskState, existingTask: task });
   }
+  if (task.kind === "tree_chopping") {
+    const requested = Number(task.params?.quantity ?? task.goal?.quantity ?? 1);
+    const collected = Number(task.progress?.collected ?? 0);
+    return chopTrees(window, { ...(task.params || task.goal), quantity: Math.max(1, requested - collected) }, { taskState, existingTask: task });
+  }
+  if (task.kind === "blueprint_build") {
+    return runBlueprintBuild(window, task.params || task.goal, { taskState, existingTask: task, activeTasks: activeBlueprintTasks, eventQueue });
+  }
   throw new Error(`不支持续跑任务类型：${task.kind}`);
 }
 
@@ -128,6 +142,16 @@ async function cancelMinecraftTask(task, window) {
       const active = activeExplorationTasks.get(task.id);
       if (active) active.cancelled = true;
       return taskState.cancel(task.id, "用户取消寻矿任务");
+    }
+    if (task.kind === "tree_chopping") {
+      const active = activeTreeTasks.get(task.id);
+      if (active) active.cancelled = true;
+      return taskState.cancel(task.id, "tree chopping cancelled");
+    }
+    if (task.kind === "blueprint_build") {
+      const active = activeBlueprintTasks.get(task.id);
+      if (active) { active.cancelled = true; active.controller.abort("用户取消蓝图建造"); }
+      return taskState.cancel(task.id, "用户取消蓝图建造");
     }
     if (["move", "block_action", "craft"].includes(task.kind)) {
       const stopped = await stopAtomicOperation(window, task.kind, task.progress.operationId);
@@ -145,9 +169,13 @@ async function cancelMinecraftTask(task, window) {
 
 const minecraftTools = new ToolRegistry();
 const activeExplorationTasks = new Map();
+const activeTreeTasks = new Map();
+const activeBlueprintTasks = new Map();
 registerAtomicTools(minecraftTools, { taskState });
 registerCraftingTools(minecraftTools, { taskState });
-registerExplorationTools(minecraftTools, { taskState, activeTasks: activeExplorationTasks });
+registerExplorationTools(minecraftTools, { taskState, activeTasks: activeExplorationTasks, eventQueue });
+registerTreeTools(minecraftTools, { taskState, activeTasks: activeTreeTasks, eventQueue });
+registerBlueprintTools(minecraftTools, { taskState, activeTasks: activeBlueprintTasks, eventQueue });
 minecraftTools
   .register({
     name: "minecraft_observe",
@@ -432,6 +460,30 @@ async function api(req, res, url) {
         endpoint: "/api/skills/minecraft_explore_for_ore",
         readOnly: false,
       }, {
+        name: "minecraft_chop_tree",
+        description: "Finds loaded tree logs within 64 blocks, chops them with a compatible axe, and collects nearby wood drops.",
+        method: "POST",
+        endpoint: "/api/skills/minecraft_chop_tree",
+        readOnly: false,
+      }, {
+        name: "minecraft_build_blueprint",
+        description: "读取受限目录中的 .litematic 蓝图，比较世界差异并按支撑顺序施工，支持材料预检、清障、实时任务和续跑。",
+        method: "POST",
+        endpoint: "/api/skills/minecraft_build_blueprint",
+        readOnly: false,
+      }, {
+        name: "minecraft_build_status",
+        description: "查询 .litematic 蓝图建造任务的实时进度和失败原因。",
+        method: "POST",
+        endpoint: "/api/skills/minecraft_build_status",
+        readOnly: true,
+      }, {
+        name: "minecraft_build_stop",
+        description: "停止蓝图建造并保留已完成进度。",
+        method: "POST",
+        endpoint: "/api/skills/minecraft_build_stop",
+        readOnly: false,
+      }, {
         name: "minecraft_players",
         description: "识别 32 格内可跟随的其他玩家，按距离排序",
         method: "GET",
@@ -513,6 +565,15 @@ async function api(req, res, url) {
 
   if (req.method === "GET" && url.pathname === "/api/automation/config") {
     return json(res, 200, { ok: true, ...(await autoReply.getPublicState()) });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/automation/check") {
+    try {
+      const body = await readBody(req);
+      return json(res, 200, await autoReply.checkModelConnection(body));
+    } catch (error) {
+      return json(res, 400, { ok: false, available: false, error: error.message });
+    }
   }
 
   if (req.method === "GET" && url.pathname === "/api/events") {
@@ -749,9 +810,9 @@ async function api(req, res, url) {
     }
   }
 
-  const atomicSkill = url.pathname.match(/^\/api\/skills\/(minecraft_(?:scan_blocks|move_to|break_block|place_block|recipes|craft|explore_for_ore))$/u);
+  const atomicSkill = url.pathname.match(/^\/api\/skills\/(minecraft_(?:scan_blocks|move_to|break_block|place_block|recipes|craft|explore_for_ore|chop_tree|build_blueprint|build_status|build_stop))$/u);
   if (atomicSkill) {
-    if (req.method !== "POST") return json(res, 405, { ok: false, error: "原子动作接口只支持 POST" });
+    if (req.method !== "POST") return json(res, 405, { ok: false, error: "Minecraft 工具接口只支持 POST" });
     const controller = new AbortController();
     const disconnected = () => { if (!res.writableEnded) controller.abort("客户端已断开"); };
     res.on("close", disconnected);

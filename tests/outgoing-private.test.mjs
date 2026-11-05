@@ -1,6 +1,6 @@
-import test from "node:test";
+﻿import test from "node:test";
 import assert from "node:assert/strict";
-import { AutoReplyService, DEFAULT_CONFIG } from "../auto-reply.mjs";
+import { AutoReplyService, DEFAULT_CONFIG } from "../src/core/auto-reply.mjs";
 
 test("发给唤醒 ID 的本地私聊会触发，AI 发给其他玩家的回显会忽略", async () => {
   const sent = [];

@@ -86,9 +86,12 @@ function renderAutomation(value) {
   const config = value.config;
   if (!state.automationInitialized) {
     $("#automationEnabled").checked = Boolean(config.enabled);
+    $("#experienceLearningEnabled").checked = config.experienceLearningEnabled !== false;
     $("#voiceReplyEnabled").checked = Boolean(config.voiceReplyEnabled);
     $("#triggerName").value = config.triggerName ?? "";
     $("#aiBaseUrl").value = config.baseUrl ?? "";
+    $("#aiApiFormat").value = config.apiFormat ?? "chat_completions";
+    $("#executionMode").value = config.executionMode ?? "tools";
     $("#aiModel").value = config.model ?? "";
     $("#voiceProvider").value = config.voiceProvider ?? "openai";
     $("#voiceOutput").value = config.voiceOutput ?? "local";
@@ -112,6 +115,47 @@ function renderAutomation(value) {
   $("#automationMonitor").textContent = status.lastError
     ? `错误：${status.lastError}`
     : `已处理 ${status.processed ?? 0} 条聊天，已回复 ${status.replied ?? 0} 条${status.lastSkills?.length ? `，最近技能 ${status.lastSkills.join("、")}` : ""}${status.lastReplyAt ? `，最近回复 ${status.lastReplyAt}` : ""}${config.voiceReplyEnabled ? `，语音完成 ${status.voicePlayed ?? 0} 条` : ""}${status.lastVoiceError ? `，语音错误：${status.lastVoiceError}` : ""}`;
+}
+
+async function checkAiConnection() {
+  const button = $("#aiCheckButton");
+  const status = $("#aiCheckStatus");
+  button.disabled = true;
+  status.textContent = "正在检测 AI 接口…";
+  const payload = {
+    baseUrl: $("#aiBaseUrl").value,
+    apiFormat: $("#aiApiFormat").value,
+    executionMode: $("#executionMode").value,
+    model: $("#aiModel").value,
+    temperature: Number($("#aiTemperature").value),
+    maxTokens: Number($("#aiMaxTokens").value),
+  };
+  const apiKey = $("#aiApiKey").value;
+  if (apiKey) payload.apiKey = apiKey;
+  try {
+    const response = await fetch("/api/automation/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      cache: "no-store",
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "AI 接口检测失败");
+    const endpointDetail = result.endpoint ? ` \u00b7 ${result.endpoint}` : "";
+    if (result.available) {
+      status.textContent = `可用 · ${result.protocol} · HTTP ${result.httpStatus} · ${result.latencyMs} ms${endpointDetail}`;
+      status.className = "status-success";
+    } else {
+      const responseDetail = result.contentType ? ` \u00b7 ${result.contentType}` : "";
+      status.textContent = `不可用 · ${result.error || "未收到有效回复"}${Number.isFinite(result.latencyMs) ? ` \u00b7 ${result.latencyMs} ms` : ""}${responseDetail}${endpointDetail}`;
+      status.className = "status-error";
+    }
+  } catch (error) {
+    status.textContent = `检测失败 · ${error.message}`;
+    status.className = "status-error";
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function checkVoiceConnection() {
@@ -166,10 +210,13 @@ async function saveAutomation(event) {
   event.preventDefault();
   const payload = {
     enabled: $("#automationEnabled").checked,
+    experienceLearningEnabled: $("#experienceLearningEnabled").checked,
     voiceReplyEnabled: $("#voiceReplyEnabled").checked,
     triggerName: $("#triggerName").value,
     windowId: $("#automationWindowId").value,
     baseUrl: $("#aiBaseUrl").value,
+    apiFormat: $("#aiApiFormat").value,
+    executionMode: $("#executionMode").value,
     model: $("#aiModel").value,
     voiceProvider: $("#voiceProvider").value,
     voiceOutput: $("#voiceOutput").value,
@@ -549,6 +596,7 @@ document.addEventListener("DOMContentLoaded", () => {
   window.setInterval(() => loadData({ silent: true }), 3000);
   $("#messageForm").addEventListener("submit", sendMessage);
   $("#automationForm").addEventListener("submit", saveAutomation);
+  $("#aiCheckButton")?.addEventListener("click", checkAiConnection);
   $("#voiceProvider")?.addEventListener("change", updateVoiceProviderFields);
   $("#voiceCheckButton")?.addEventListener("click", checkVoiceConnection);
   $("#automationWindowId")?.addEventListener("change", (event) => { event.target.dataset.edited = "true"; });
@@ -572,7 +620,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#openChatButton").addEventListener("click", focusChat);
   $("#heroChatButton").addEventListener("click", focusChat);
   $("#viewAllButton").addEventListener("click", focusChat);
-  document.querySelectorAll(".quick-action:not(.disabled)").forEach((button) => button.addEventListener("click", () => button.dataset.action === "refresh" ? loadData() : focusChat()));
+  document.querySelectorAll(".quick-action").forEach((button) => button.addEventListener("click", () => button.dataset.action === "refresh" ? loadData() : focusChat()));
   document.querySelectorAll(".nav-item").forEach((item) => item.addEventListener("click", () => {
     document.querySelectorAll(".nav-item").forEach((nav) => nav.classList.remove("active"));
     item.classList.add("active");

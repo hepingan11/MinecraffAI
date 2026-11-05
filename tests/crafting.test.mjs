@@ -1,4 +1,4 @@
-import test from "node:test";
+﻿import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
@@ -6,13 +6,13 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import os from "node:os";
-import { registerCraftingTools } from "../minecraft-crafting-tools.mjs";
-import { craftItem, getCraftingRecipes, getInventory } from "../minecraft-mod-api.mjs";
-import { ToolRegistry } from "../tool-registry.mjs";
-import { EventQueue } from "../event-queue.mjs";
-import { MinecraftEventSource } from "../minecraft-event-source.mjs";
-import { TaskStateStore } from "../task-state.mjs";
-import { AutoReplyService, DEFAULT_CONFIG } from "../auto-reply.mjs";
+import { registerCraftingTools } from "../src/skills/minecraft-crafting-tools.mjs";
+import { craftItem, getCraftingRecipes, getInventory } from "../src/minecraft/minecraft-mod-api.mjs";
+import { ToolRegistry } from "../src/core/tool-registry.mjs";
+import { EventQueue } from "../src/core/event-queue.mjs";
+import { MinecraftEventSource } from "../src/minecraft/minecraft-event-source.mjs";
+import { TaskStateStore } from "../src/core/task-state.mjs";
+import { AutoReplyService, DEFAULT_CONFIG } from "../src/core/auto-reply.mjs";
 
 const dimension = "minecraft:overworld";
 const id = "00000000-0000-4000-8000-000000000007";

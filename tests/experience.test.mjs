@@ -1,9 +1,9 @@
-import test from "node:test";
+﻿import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { ExperienceStore, parseExperienceFeedback } from "../experience-store.mjs";
+import { ExperienceStore, parseExperienceFeedback } from "../src/core/experience-store.mjs";
 
 async function store() {
   const dir = await mkdtemp(path.join(os.tmpdir(), "minecraft-ai-experience-"));

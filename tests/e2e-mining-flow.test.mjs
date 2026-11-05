@@ -1,11 +1,11 @@
-import test from "node:test";
+﻿import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
-import { AutoReplyService, DEFAULT_CONFIG } from "../auto-reply.mjs";
-import { EventQueue } from "../event-queue.mjs";
-import { getEnvironment, getInventory, getObservation, getFollowStatus, getMiningStatus, startMining, validateMiningPlan } from "../minecraft-mod-api.mjs";
-import { ToolRegistry } from "../tool-registry.mjs";
+import { AutoReplyService, DEFAULT_CONFIG } from "../src/core/auto-reply.mjs";
+import { EventQueue } from "../src/core/event-queue.mjs";
+import { getEnvironment, getInventory, getObservation, getFollowStatus, getMiningStatus, startMining, validateMiningPlan } from "../src/minecraft/minecraft-mod-api.mjs";
+import { ToolRegistry } from "../src/core/tool-registry.mjs";
 
 const pickaxe = { slot: 0, itemId: "minecraft:iron_pickaxe", name: "Iron Pickaxe", count: 1, damage: 0, maxDamage: 250, broken: false };
 
